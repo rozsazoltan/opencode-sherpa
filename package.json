@@ -1,0 +1,19 @@
+{
+  "name": "opencode-sherpa",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.16"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "typescript": "5.8.2"
+  }
+}
