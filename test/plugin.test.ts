@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Cleanup, Context } from "@opencode/plugin/promise/plugin";
@@ -9,6 +9,7 @@ import type { MCPEditor } from "@opencode/plugin/promise/mcp";
 import type { SkillEditor } from "@opencode/plugin/promise/skill";
 import type { Registration } from "@opencode/plugin/promise/registration";
 import SherpaPlugin from "../src/index.ts";
+import { CAVEMAN_SKILL_NAMES } from "../src/skills.ts";
 
 type PermissionDecision = Pick<PermissionEvaluation, "action" | "effect" | "resources">;
 type SkillInfo = Parameters<SkillEditor["add"]>[0];
@@ -88,7 +89,7 @@ test("registers context, permission, MCP, and skills and disposes them", async (
     type: "remote",
     url: "https://mcp.jina.ai/v1",
   });
-  expect([...skills.keys()].sort()).toEqual(["caveman", "caveman-commit", "caveman-review"]);
+  expect([...skills.keys()].sort()).toEqual([...CAVEMAN_SKILL_NAMES].sort());
 
   const sessionContext = { system: [] } as unknown as SessionContext;
   await contextCallback?.(sessionContext);
@@ -223,7 +224,7 @@ test("completes plugin setup when token-file GitHub registration collides with a
       type: "remote",
       url: "https://mcp.jina.ai/v1",
     });
-    expect([...skills.keys()].sort()).toEqual(["caveman", "caveman-commit", "caveman-review"]);
+    expect([...skills.keys()].sort()).toEqual([...CAVEMAN_SKILL_NAMES].sort());
   } finally {
     await cleanup?.();
     await rm(directory, { recursive: true, force: true });
@@ -269,7 +270,7 @@ test("does not replace an existing skill during plugin setup", async () => {
   await SherpaPlugin.setup(context);
 
   expect(skills.get("caveman")).toBe(collision);
-  expect(added.sort()).toEqual(["caveman-commit", "caveman-review"]);
+  expect(added.sort()).toEqual([...CAVEMAN_SKILL_NAMES].filter((name) => name !== "caveman").sort());
 });
 
 test("cleans up earlier registrations if MCP setup rejects", async () => {
@@ -329,4 +330,32 @@ test("cleans up MCP, permission, and session registrations if skill setup reject
 
   expect(caught).toBe(failure);
   expect(disposed).toEqual(["mcp.transform", "permission.evaluate", "session.context"]);
+});
+
+test("syncs host config only when explicitly enabled", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "sherpa-plugin-host-"));
+  const previous = process.env.XDG_CONFIG_HOME;
+  const configDirectory = path.join(root, "opencode");
+  const configPath = path.join(configDirectory, "opencode.jsonc");
+  try {
+    await mkdir(configDirectory);
+    await writeFile(configPath, "{}\n");
+    process.env.XDG_CONFIG_HOME = root;
+    const context = {
+      options: { hostSync: true },
+      session: { hook: async () => ({ dispose: async () => {} }) },
+      permission: { hook: async () => ({ dispose: async () => {} }) },
+      mcp: { transform: async () => ({ dispose: async () => {} }) },
+      skill: { transform: async () => ({ dispose: async () => {} }) },
+    } as unknown as Context;
+    const cleanup = await SherpaPlugin.setup(context);
+    const updated = JSON.parse(await readFile(configPath, "utf8"));
+    expect(updated.plugins).toContain("oh-my-opencode-slim@2");
+    expect(updated.agents["cavecrew-investigator"].mode).toBe("subagent");
+    await cleanup?.();
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous;
+    await rm(root, { recursive: true, force: true });
+  }
 });

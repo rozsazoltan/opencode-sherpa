@@ -5,6 +5,7 @@ import { createEngineeringInstructions } from "./instructions.ts";
 import { registerRemoteMcpServers } from "./mcp.ts";
 import { registerCavemanSkills } from "./skills.ts";
 import { createDirectoryPermissionEvaluator } from "./permissions.ts";
+import { syncHostConfig } from "./host-config.ts";
 
 async function disposeRegistrations(
   registrations: readonly Registration[],
@@ -30,6 +31,9 @@ async function disposeRegistrations(
 export const SherpaPlugin = Plugin.define({
   id: "opencode-sherpa",
   async setup(ctx: Context) {
+    if (ctx.options?.hostSync !== undefined && typeof ctx.options.hostSync !== "boolean") {
+      throw new TypeError("hostSync must be a boolean.");
+    }
     const evaluatePermission = createDirectoryPermissionEvaluator(ctx.options);
     const registrations: Registration[] = [];
 
@@ -40,6 +44,7 @@ export const SherpaPlugin = Plugin.define({
       registrations.push(await ctx.permission.hook("evaluate", evaluatePermission));
       registrations.push(await registerRemoteMcpServers(ctx, ctx.options?.mcp));
       registrations.push(await registerCavemanSkills(ctx));
+      if (ctx.options?.hostSync === true) await syncHostConfig();
     } catch (error) {
       await disposeRegistrations(registrations, true);
       throw error;

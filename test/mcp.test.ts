@@ -57,17 +57,23 @@ test("registers remote servers with host-managed GitHub OAuth by default", async
     type: "remote",
     url: "https://mcp.jina.ai/v1",
   });
+  expect(servers.get("context7")).toEqual({ type: "remote", url: "https://mcp.context7.com/mcp" });
+  expect(servers.get("gh_grep")).toEqual({ type: "remote", url: "https://mcp.grep.app" });
 });
 
 test("does not replace pre-existing MCP server configurations", async () => {
   const github = { type: "remote", url: "https://github.example/mcp" };
   const jina = { type: "local", command: ["existing-jina"] };
-  const { context, servers } = createContext({ github, jina });
+  const context7 = { type: "remote", url: "https://existing.example/context7" };
+  const gh_grep = { type: "local", command: ["existing-grep"] };
+  const { context, servers } = createContext({ github, jina, context7, gh_grep });
 
   await registerRemoteMcpServers(context);
 
   expect(servers.get("github")).toBe(github);
   expect(servers.get("jina")).toBe(jina);
+  expect(servers.get("context7")).toBe(context7);
+  expect(servers.get("gh_grep")).toBe(gh_grep);
 });
 
 test("does not read a missing token file when GitHub already exists", async () => {

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { Context } from "@opencode/plugin/promise/plugin";
 import type { SkillEditor } from "@opencode/plugin/promise/skill";
 import type { Registration } from "@opencode/plugin/promise/registration";
-import { registerCavemanSkills } from "../src/skills.ts";
+import { CAVEMAN_SKILL_NAMES, registerCavemanSkills } from "../src/skills.ts";
 
 const SKILL_NAMES = ["caveman", "caveman-commit", "caveman-review"] as const;
 const CAVEMAN_PACKAGE_ROOT = fileURLToPath(
@@ -61,7 +61,7 @@ test("registers exactly the three independent upstream skills with their Markdow
   const { added, registration } = await setupSkills();
 
   expect(registration).toBeDefined();
-  expect([...added.keys()].sort()).toEqual([...SKILL_NAMES].sort());
+  expect([...added.keys()].sort()).toEqual([...CAVEMAN_SKILL_NAMES].sort());
 
   for (const name of SKILL_NAMES) {
     const skill = added.get(name);
@@ -92,7 +92,32 @@ test("leaves colliding skills untouched and adds only missing Caveman skills", a
 
   expect(existing.get("caveman")).toBe(collision);
   expect(added.has("caveman")).toBe(false);
-  expect([...added.keys()].sort()).toEqual(["caveman-commit", "caveman-review"]);
+  expect([...added.keys()].sort()).toEqual([...CAVEMAN_SKILL_NAMES].filter((name) => name !== "caveman").sort());
+});
+
+test("adapts dependent Caveman skills to OpenCode without running Claude hooks", async () => {
+  const { added } = await setupSkills();
+  for (const name of ["caveman-help", "caveman-compress", "caveman-stats", "cavecrew"]) {
+    expect(added.get(name)).toBeDefined();
+    expect(path.isAbsolute(String(added.get(name)?.path))).toBe(true);
+  }
+  expect(added.get("caveman-help")?.content).toContain("Caveman Help (OpenCode)");
+  expect(added.get("caveman-help")?.content).not.toContain("Saves ~46%");
+  expect(added.get("caveman-compress")?.content).toContain("## Compression Rules");
+  expect(added.get("caveman-compress")?.content).not.toContain("python3 -m scripts");
+  expect(added.get("caveman-stats")?.content).toContain("unavailable");
+  expect(added.get("cavecrew")?.content).toContain("Restart OpenCode");
+});
+
+test("requires the main thread to provide review material to OpenCode cavecrew-reviewer", async () => {
+  const { added } = await setupSkills();
+  const cavecrew = added.get("cavecrew")?.content ?? "";
+
+  expect(cavecrew).toContain("cannot run shell commands or inspect Git state");
+  expect(cavecrew).toContain("main thread MUST provide the relevant diff");
+  expect(cavecrew).toContain("relevant file excerpts showing the changes");
+  expect(cavecrew).toContain("Do not ask it to run `git diff`, `git log`, or `git show`");
+  expect(cavecrew).toContain("unless that content was explicitly supplied");
 });
 
 test("does not add dependencies from CC Switch", async () => {

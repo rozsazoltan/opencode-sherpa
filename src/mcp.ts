@@ -13,6 +13,8 @@ export interface McpOptions {
 
 const GITHUB_URL = "https://api.githubcopilot.com/mcp/";
 const JINA_URL = "https://mcp.jina.ai/v1";
+const CONTEXT7_URL = "https://mcp.context7.com/mcp";
+const GH_GREP_URL = "https://mcp.grep.app";
 
 function validateOptions(options: unknown): McpOptions {
   if (options === undefined) return {};
@@ -69,7 +71,7 @@ function readGithubToken(tokenFile: string): string {
   return token;
 }
 
-/** Register GitHub and Jina remote MCP servers without replacing existing entries. */
+/** Register the portable remote MCP servers without replacing existing entries. */
 export async function registerRemoteMcpServers(
   ctx: Pick<Context, "mcp">,
   options?: McpOptions,
@@ -94,6 +96,12 @@ export async function registerRemoteMcpServers(
 
     if (editor.get("jina") === undefined) {
       editor.set("jina", { type: "remote", url: JINA_URL });
+    }
+    if (editor.get("context7") === undefined) {
+      editor.set("context7", { type: "remote", url: CONTEXT7_URL });
+    }
+    if (editor.get("gh_grep") === undefined) {
+      editor.set("gh_grep", { type: "remote", url: GH_GREP_URL });
     }
   });
 }
