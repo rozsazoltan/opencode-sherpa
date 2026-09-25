@@ -1,10 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import type { Cleanup, Context } from "@opencode/plugin/promise/plugin";
 import type { PermissionEvaluation } from "@opencode/plugin/promise/permission";
-import type { SessionContext } from "@opencode/plugin/promise/session";
+import type { SessionContext, SessionHooks } from "@opencode/plugin/promise/session";
 import type { AgentEditor } from "@opencode/plugin/promise/agent";
 import type { CommandDefinition, CommandEditor } from "@opencode/plugin/promise/command";
 import type { MCPEditor } from "@opencode/plugin/promise/mcp";
@@ -74,7 +75,7 @@ function runtimeDomains(disposed: string[] = [], commandFailure?: Error) {
   };
 }
 
-test("registers plugin services and runtime Cavecrew features and disposes them", async () => {
+test("registers default plugin services without opting into Caveman and disposes them", async () => {
   const disposed: string[] = [];
   const defaultDirectory = path.join(os.tmpdir(), "opencode");
   const extraDirectory = path.join(os.tmpdir(), "sherpa-plugin-extra");
@@ -82,6 +83,7 @@ test("registers plugin services and runtime Cavecrew features and disposes them"
   const servers = new Map<string, unknown>();
   const skills = new Map<string, SkillInfo>();
   const runtime = runtimeDomains(disposed);
+  let skillTransformCalled = false;
   let contextCallback: ((input: SessionContext) => void | Promise<void>) | undefined;
   let permissionCallback: ((input: PermissionDecision) => void | Promise<void>) | undefined;
   const editor = {
@@ -120,6 +122,7 @@ test("registers plugin services and runtime Cavecrew features and disposes them"
     add: (skill: SkillInfo) => { skills.set(String(skill.id), skill); },
   } as unknown as SkillEditor;
   const skillTransform = async (callback: (editor: SkillEditor) => void): Promise<Registration> => {
+    skillTransformCalled = true;
     callback(skillEditor);
     return { dispose: async () => { disposed.push("skill.transform"); } };
   };
@@ -151,13 +154,10 @@ test("registers plugin services and runtime Cavecrew features and disposes them"
     type: "remote",
     url: "https://mcp.jina.ai/v1",
   });
-  expect([...skills.keys()].sort()).toEqual([...CAVEMAN_SKILL_NAMES].sort());
-  expect([...runtime.agents.keys()].sort()).toEqual([
-    "cavecrew-builder", "cavecrew-investigator", "cavecrew-reviewer",
-  ]);
-  expect([...runtime.commands.keys()].sort()).toEqual([
-    "caveman", "caveman-commit", "caveman-compress", "caveman-help", "caveman-review", "caveman-stats",
-  ]);
+  expect(skillTransformCalled).toBe(false);
+  expect(skills.size).toBe(0);
+  expect(runtime.agents.size).toBe(0);
+  expect(runtime.commands.size).toBe(0);
 
   const sessionContext = { system: [] } as unknown as SessionContext;
   await contextCallback?.(sessionContext);
@@ -223,16 +223,13 @@ test("registers plugin services and runtime Cavecrew features and disposes them"
 
   await cleanup?.();
   expect(disposed).toEqual([
-    "command.transform",
-    "agent.transform",
-    "skill.transform",
     "mcp.transform",
     "permission.evaluate",
     "session.context",
   ]);
 });
 
-test("completes plugin setup when token-file GitHub registration collides with a host server", async () => {
+test("completes default setup when token-file GitHub registration collides with a host server", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "sherpa-plugin-"));
   const missingTokenFile = path.join(directory, "missing-github-key");
   const disposed: string[] = [];
@@ -296,25 +293,22 @@ test("completes plugin setup when token-file GitHub registration collides with a
       type: "remote",
       url: "https://mcp.jina.ai/v1",
     });
-    expect([...skills.keys()].sort()).toEqual([...CAVEMAN_SKILL_NAMES].sort());
-    expect(runtime.agents.size).toBe(3);
-    expect(runtime.commands.size).toBe(6);
+    expect(skills.size).toBe(0);
+    expect(runtime.agents.size).toBe(0);
+    expect(runtime.commands.size).toBe(0);
   } finally {
     await cleanup?.();
     await rm(directory, { recursive: true, force: true });
   }
 
   expect(disposed).toEqual([
-    "command.transform",
-    "agent.transform",
-    "skill.transform",
     "mcp.transform",
     "permission.evaluate",
     "session.context",
   ]);
 });
 
-test("does not replace an existing skill during plugin setup", async () => {
+test("leaves existing skills untouched when Caveman installation is disabled", async () => {
   const collision = {
     id: "caveman",
     name: "existing caveman",
@@ -348,7 +342,7 @@ test("does not replace an existing skill during plugin setup", async () => {
   await SherpaPlugin.setup(context);
 
   expect(skills.get("caveman")).toBe(collision);
-  expect(added.sort()).toEqual([...CAVEMAN_SKILL_NAMES].filter((name) => name !== "caveman").sort());
+  expect(added).toEqual([]);
 });
 
 test("cleans up earlier registrations if MCP setup rejects", async () => {
@@ -379,9 +373,9 @@ test("cleans up earlier registrations if MCP setup rejects", async () => {
   expect(disposed).toEqual(["permission.evaluate", "session.context"]);
 });
 
-test("cleans up MCP, permission, and session registrations if skill setup rejects", async () => {
+test("does not run a failing Caveman skill transform when installation is disabled", async () => {
   const disposed: string[] = [];
-  const failure = new Error("Skill transform failed.");
+  let cleanup: Cleanup | undefined;
 
   const context = {
     options: {},
@@ -395,22 +389,23 @@ test("cleans up MCP, permission, and session registrations if skill setup reject
       transform: async () => ({ dispose: async () => { disposed.push("mcp.transform"); } }),
     },
     skill: {
-      transform: async () => { throw failure; },
+      transform: async () => { throw new Error("Caveman registration must stay disabled."); },
     },
   } as unknown as Context;
 
-  let caught: unknown;
   try {
-    await SherpaPlugin.setup(context);
-  } catch (error) {
-    caught = error;
+    const registeredCleanup = await SherpaPlugin.setup(context);
+    if (typeof registeredCleanup === "function") cleanup = registeredCleanup;
+
+    expect(disposed).toEqual([]);
+  } finally {
+    await cleanup?.();
   }
 
-  expect(caught).toBe(failure);
   expect(disposed).toEqual(["mcp.transform", "permission.evaluate", "session.context"]);
 });
 
-test("rolls back agent and earlier registrations when command setup rejects", async () => {
+test("does not run a failing Caveman command transform when installation is disabled", async () => {
   const disposed: string[] = [];
   const failure = new Error("Command transform failed.");
   const runtime = runtimeDomains(disposed, failure);
@@ -431,21 +426,261 @@ test("rolls back agent and earlier registrations when command setup rejects", as
     ...runtime.api,
   } as unknown as Context;
 
-  let caught: unknown;
-  try {
-    await SherpaPlugin.setup(context);
-  } catch (error) {
-    caught = error;
-  }
+  const cleanup = await SherpaPlugin.setup(context);
+  expect(runtime.agents.size).toBe(0);
+  expect(runtime.commands.size).toBe(0);
+  await cleanup?.();
 
-  expect(caught).toBe(failure);
   expect(disposed).toEqual([
-    "agent.transform",
-    "skill.transform",
     "mcp.transform",
     "permission.evaluate",
     "session.context",
   ]);
+});
+
+test("rejects non-boolean Caveman installation options before registering services", async () => {
+  const called: string[] = [];
+  const context = {
+    options: { cavemanInstall: "true" },
+    session: { hook: async () => { called.push("session"); throw new Error("unexpected"); } },
+    permission: { hook: async () => { called.push("permission"); throw new Error("unexpected"); } },
+    mcp: { transform: async () => { called.push("mcp"); throw new Error("unexpected"); } },
+  } as unknown as Context;
+
+  await expect(SherpaPlugin.setup(context)).rejects.toThrow("cavemanInstall must be a boolean.");
+  expect(called).toEqual([]);
+});
+
+test("rolls back default registrations when opted-in installation fails inside isolated XDG config", async () => {
+  const releaseFixture = await acquireHostSyncFixture();
+  const previousXdg = process.env.XDG_CONFIG_HOME;
+  let root: string | undefined;
+  try {
+    root = await mkdtemp(path.join(os.tmpdir(), "sherpa-plugin-install-failure-"));
+    const configDirectory = path.join(root, "opencode");
+    await mkdir(configDirectory);
+    const agentsPath = path.join(configDirectory, "AGENTS.md");
+    const configPath = path.join(configDirectory, "opencode.jsonc");
+    const agentsContents = "User-owned OpenCode instructions.\n";
+    const configContents = '{"plugins": ["user-plugin"]}\n';
+    const sherpaBlocker = "Keep this user-owned file.\n";
+    await writeFile(agentsPath, agentsContents);
+    await writeFile(configPath, configContents);
+    await writeFile(path.join(configDirectory, ".sherpa"), sherpaBlocker);
+    process.env.XDG_CONFIG_HOME = root;
+
+    const disposed: string[] = [];
+    const context = {
+      options: { cavemanInstall: true },
+      session: {
+        hook: async () => ({ dispose: async () => { disposed.push("session.context"); } }),
+      },
+      permission: {
+        hook: async () => ({ dispose: async () => { disposed.push("permission.evaluate"); } }),
+      },
+      mcp: {
+        transform: async () => ({ dispose: async () => { disposed.push("mcp.transform"); } }),
+      },
+    } as unknown as Context;
+
+    await expect(SherpaPlugin.setup(context)).rejects.toThrow("The .sherpa path must be a real directory.");
+    expect(disposed).toEqual(["mcp.transform", "permission.evaluate", "session.context"]);
+    expect(await readFile(agentsPath, "utf8")).toBe(agentsContents);
+    expect(await readFile(configPath, "utf8")).toBe(configContents);
+    expect(await readFile(path.join(configDirectory, ".sherpa"), "utf8")).toBe(sherpaBlocker);
+    expect((await readdir(configDirectory)).sort()).toEqual([".sherpa", "AGENTS.md", "opencode.jsonc"].sort());
+  } finally {
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+    if (root) await rm(root, { recursive: true, force: true });
+    releaseFixture();
+  }
+});
+
+function requireNode18(): void {
+  let version: string;
+  try {
+    version = execFileSync("node", ["--version"], { encoding: "utf8" }).trim();
+  } catch (error) {
+    throw new Error("The Caveman plugin integration test requires executable Node.js >=18 on PATH.", { cause: error });
+  }
+
+  const major = /^v?(\d+)\./u.exec(version)?.[1];
+  if (!major || Number(major) < 18) {
+    throw new Error(`The Caveman plugin integration test requires Node.js >=18; found ${version || "unknown version"}.`);
+  }
+}
+
+test("opts into Caveman, installs the pinned payload, and rolls back a registration failure", async () => {
+  requireNode18();
+  const releaseFixture = await acquireHostSyncFixture();
+  const previousXdg = process.env.XDG_CONFIG_HOME;
+  let root: string | undefined;
+  let cleanup: Cleanup | undefined;
+  try {
+    root = await mkdtemp(path.join(os.tmpdir(), "sherpa-plugin-opt-in-"));
+    const configDirectory = path.join(root, "opencode");
+    await mkdir(configDirectory);
+    const agentsPath = path.join(configDirectory, "AGENTS.md");
+    const configPath = path.join(configDirectory, "opencode.jsonc");
+    const agentsContents = "User-owned OpenCode instructions.\n";
+    const configContents = '{\n  "plugins": ["user-plugin"],\n  "custom": true,\n}\n';
+    await writeFile(agentsPath, agentsContents);
+    await writeFile(configPath, configContents);
+    process.env.XDG_CONFIG_HOME = root;
+
+    const disposed: string[] = [];
+    const hookNames: string[] = [];
+    const contextCallbacks: Array<(input: SessionHooks["context"]) => void | Promise<void>> = [];
+    let promptCallback: ((input: SessionHooks["prompt"]) => void | Promise<void>) | undefined;
+    const servers = new Map<string, unknown>();
+    const skills = new Map<string, SkillInfo>();
+    const runtime = runtimeDomains(disposed);
+    const editor = {
+      list: () => [...servers.entries()],
+      get: (name: string) => servers.get(name),
+      set: (name: string, config: unknown) => { servers.set(name, config); },
+      update: () => {},
+      remove: (name: string) => { servers.delete(name); },
+    } as unknown as MCPEditor;
+    const skillEditor = {
+      get: (id: string) => skills.get(id),
+      add: (skill: SkillInfo) => { skills.set(String(skill.id), skill); },
+    } as unknown as SkillEditor;
+    const context = {
+      options: { cavemanInstall: true },
+      session: {
+        hook: async (
+          name: "context" | "prompt",
+          callback: ((input: SessionHooks["context"]) => void | Promise<void>) |
+            ((input: SessionHooks["prompt"]) => void | Promise<void>),
+        ): Promise<Registration> => {
+          hookNames.push(name);
+          if (name === "context") contextCallbacks.push(callback as (input: SessionHooks["context"]) => void | Promise<void>);
+          else promptCallback = callback as (input: SessionHooks["prompt"]) => void | Promise<void>;
+          return { dispose: async () => { disposed.push(`session.${name}`); } };
+        },
+      },
+      permission: {
+        hook: async () => ({ dispose: async () => { disposed.push("permission.evaluate"); } }),
+      },
+      mcp: {
+        transform: async (callback: (editor: MCPEditor) => void) => {
+          callback(editor);
+          return { dispose: async () => { disposed.push("mcp.transform"); } };
+        },
+      },
+      skill: {
+        transform: async (callback: (editor: SkillEditor) => void) => {
+          callback(skillEditor);
+          return { dispose: async () => { disposed.push("skill.transform"); } };
+        },
+      },
+      ...runtime.api,
+    } as unknown as Context;
+
+    const registeredCleanup = await SherpaPlugin.setup(context);
+    if (typeof registeredCleanup === "function") cleanup = registeredCleanup;
+
+    const installedRoot = path.join(configDirectory, ".sherpa", "caveman", "opencode");
+    expect(JSON.parse(await readFile(path.join(installedRoot, ".sherpa-install.json"), "utf8"))).toMatchObject({
+      installer: "caveman-installer",
+    });
+    expect(await readFile(path.join(installedRoot, "AGENTS.md"), "utf8")).toContain("Respond terse like smart caveman");
+    expect((await readdir(path.join(installedRoot, "skills"))).sort()).toEqual([...CAVEMAN_SKILL_NAMES].sort());
+    expect([...skills.keys()].sort()).toEqual([...CAVEMAN_SKILL_NAMES].sort());
+    expect([...runtime.agents.keys()].sort()).toEqual([
+      "cavecrew-builder", "cavecrew-investigator", "cavecrew-reviewer",
+    ]);
+    expect([...runtime.commands.keys()].sort()).toEqual([
+      "caveman", "caveman-commit", "caveman-compress", "caveman-help", "caveman-review", "caveman-stats",
+    ]);
+    expect(hookNames).toEqual(["context", "prompt", "context"]);
+    expect(promptCallback).toBeDefined();
+
+    const system: SessionHooks["context"]["system"] = [];
+    await contextCallbacks[0]?.({ system } as SessionHooks["context"]);
+    expect(system.some((part) => part.type === "text" && part.text.includes("Write new code identifiers"))).toBe(true);
+    const activationPrompt: SessionHooks["prompt"] = {
+      sessionID: "sherpa-plugin-integration" as SessionHooks["prompt"]["sessionID"],
+      messageID: "sherpa-plugin-integration-message" as SessionHooks["prompt"]["messageID"],
+      prompt: { text: "/caveman ultra" },
+      delivery: "queue",
+    };
+    await promptCallback?.(activationPrompt);
+    await contextCallbacks[1]?.({
+      sessionID: "sherpa-plugin-integration" as SessionHooks["context"]["sessionID"],
+      system,
+      messages: [{
+        id: activationPrompt.messageID,
+        role: "user",
+        content: [{ type: "text", text: activationPrompt.prompt.text }],
+        metadata: activationPrompt.metadata,
+      }],
+    } as unknown as SessionHooks["context"]);
+    expect(system.some((part) => part.type === "text" && part.text.includes("opencode-sherpa:caveman-mode"))).toBe(true);
+    expect(await readFile(agentsPath, "utf8")).toBe(agentsContents);
+    expect(await readFile(configPath, "utf8")).toBe(configContents);
+
+    await cleanup?.();
+    cleanup = undefined;
+    expect(disposed).toEqual([
+      "session.context",
+      "session.prompt",
+      "command.transform",
+      "agent.transform",
+      "skill.transform",
+      "mcp.transform",
+      "permission.evaluate",
+      "session.context",
+    ]);
+
+    const registrationFailure = new Error("Command transform failed after opt-in registration.");
+    const rollbackDisposed: string[] = [];
+    const rollbackRuntime = runtimeDomains(rollbackDisposed, registrationFailure);
+    const rollbackSkills = new Map<string, SkillInfo>();
+    const rollbackContext = {
+      options: { cavemanInstall: true },
+      session: {
+        hook: async (_name: "context" | "prompt") => ({
+          dispose: async () => { rollbackDisposed.push("session.context"); },
+        }),
+      },
+      permission: {
+        hook: async () => ({ dispose: async () => { rollbackDisposed.push("permission.evaluate"); } }),
+      },
+      mcp: {
+        transform: async () => ({ dispose: async () => { rollbackDisposed.push("mcp.transform"); } }),
+      },
+      skill: {
+        transform: async (callback: (editor: SkillEditor) => void) => {
+          callback({
+            get: (id: string) => rollbackSkills.get(id),
+            add: (skill: SkillInfo) => { rollbackSkills.set(String(skill.id), skill); },
+          } as unknown as SkillEditor);
+          return { dispose: async () => { rollbackDisposed.push("skill.transform"); } };
+        },
+      },
+      ...rollbackRuntime.api,
+    } as unknown as Context;
+
+    await expect(SherpaPlugin.setup(rollbackContext)).rejects.toBe(registrationFailure);
+    expect(rollbackDisposed).toEqual([
+      "agent.transform",
+      "skill.transform",
+      "mcp.transform",
+      "permission.evaluate",
+      "session.context",
+    ]);
+    expect(await readFile(agentsPath, "utf8")).toBe(agentsContents);
+    expect(await readFile(configPath, "utf8")).toBe(configContents);
+  } finally {
+    await cleanup?.();
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+    if (root) await rm(root, { recursive: true, force: true });
+    releaseFixture();
+  }
 });
 
 test("syncs host config only when explicitly enabled", async () => {
@@ -479,6 +714,7 @@ test("syncs host config only when explicitly enabled", async () => {
 });
 
 test("keeps runtime registrations active when opt-in host sync fails", async () => {
+  requireNode18();
   const releaseFixture = await acquireHostSyncFixture();
   const root = await mkdtemp(path.join(os.tmpdir(), "sherpa-plugin-host-failure-"));
   const previous = process.env.XDG_CONFIG_HOME;
@@ -490,7 +726,7 @@ test("keeps runtime registrations active when opt-in host sync fails", async () 
     await mkdir(configDirectory);
     process.env.XDG_CONFIG_HOME = root;
     const context = {
-      options: { hostSync: true },
+      options: { hostSync: true, cavemanInstall: true },
       session: { hook: async () => ({ dispose: async () => {} }) },
       permission: { hook: async () => ({ dispose: async () => {} }) },
       mcp: { transform: async () => ({ dispose: async () => {} }) },

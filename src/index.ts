@@ -2,6 +2,8 @@ import { Plugin } from "@opencode/plugin";
 import type { Context } from "@opencode/plugin/promise/plugin";
 import type { Registration } from "@opencode/plugin/promise/registration";
 import { registerCavecrewAgents } from "./agents.ts";
+import { ensureCavemanInstall } from "./caveman-install.ts";
+import { registerCavemanMode } from "./caveman-mode.ts";
 import { registerCavemanCommands } from "./commands.ts";
 import { createEngineeringInstructions } from "./instructions.ts";
 import { registerRemoteMcpServers } from "./mcp.ts";
@@ -36,6 +38,9 @@ export const SherpaPlugin = Plugin.define({
     if (ctx.options?.hostSync !== undefined && typeof ctx.options.hostSync !== "boolean") {
       throw new TypeError("hostSync must be a boolean.");
     }
+    if (ctx.options?.cavemanInstall !== undefined && typeof ctx.options.cavemanInstall !== "boolean") {
+      throw new TypeError("cavemanInstall must be a boolean.");
+    }
     const evaluatePermission = createDirectoryPermissionEvaluator(ctx.options);
     const registrations: Registration[] = [];
 
@@ -45,9 +50,13 @@ export const SherpaPlugin = Plugin.define({
       }));
       registrations.push(await ctx.permission.hook("evaluate", evaluatePermission));
       registrations.push(await registerRemoteMcpServers(ctx, ctx.options?.mcp));
-      registrations.push(await registerCavemanSkills(ctx));
-      registrations.push(await registerCavecrewAgents(ctx));
-      registrations.push(await registerCavemanCommands(ctx));
+      if (ctx.options?.cavemanInstall === true) {
+        const installedRoot = await ensureCavemanInstall();
+        registrations.push(await registerCavemanSkills(ctx, installedRoot));
+        registrations.push(await registerCavecrewAgents(ctx, installedRoot));
+        registrations.push(await registerCavemanCommands(ctx, installedRoot));
+        registrations.push(await registerCavemanMode(ctx, installedRoot));
+      }
     } catch (error) {
       await disposeRegistrations(registrations, true);
       throw error;

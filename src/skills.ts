@@ -1,6 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Context } from "@opencode/plugin/promise/plugin";
 import type { SkillEditor } from "@opencode/plugin/promise/skill";
 import type { Registration } from "@opencode/plugin/promise/registration";
@@ -9,9 +8,6 @@ export const CAVEMAN_SKILL_NAMES = [
   "caveman", "caveman-commit", "caveman-review", "caveman-help",
   "caveman-compress", "caveman-stats", "cavecrew",
 ] as const;
-const CAVEMAN_PACKAGE_ROOT = fileURLToPath(
-  new URL(".", import.meta.resolve("caveman-installer/package.json")),
-);
 
 type SkillInfo = Parameters<SkillEditor["add"]>[0];
 
@@ -50,7 +46,7 @@ function adaptContent(name: string, content: string): string {
   if (name === "caveman-compress") {
     const rules = content.slice(content.indexOf("## Compression Rules"));
     if (!rules.startsWith("## Compression Rules")) {
-      throw new Error("Caveman compression rules are missing from the pinned dependency.");
+      throw new Error("Caveman compression rules are missing from the installed skill asset.");
     }
     return `# Caveman Compress (OpenCode)
 
@@ -70,7 +66,7 @@ ${rules}`;
   if (name === "cavecrew") {
     const chainingHeading = "## Chaining patterns";
     if (!content.includes(chainingHeading)) {
-      throw new Error("Cavecrew chaining guidance is missing from the pinned dependency.");
+      throw new Error("Cavecrew chaining guidance is missing from the installed skill asset.");
     }
 
     return content.replace(/`Explore` \(vanilla\)/gu, "a general-purpose codebase explorer")
@@ -109,8 +105,28 @@ function foldDescriptionLines(lines: readonly string[]): string {
   return paragraphs.join("\n").trim();
 }
 
+function parseFrontmatterScalar(value: string, expectedName: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (typeof parsed === "string") return parsed;
+    } catch (error) {
+      throw new Error(`Caveman skill "${expectedName}" has invalid quoted frontmatter.`, { cause: error });
+    }
+    throw new Error(`Caveman skill "${expectedName}" has invalid quoted frontmatter.`);
+  }
+  if (trimmed.startsWith("'")) {
+    if (!trimmed.endsWith("'") || trimmed.length < 2) {
+      throw new Error(`Caveman skill "${expectedName}" has invalid quoted frontmatter.`);
+    }
+    return trimmed.slice(1, -1).replaceAll("''", "'");
+  }
+  return trimmed.replace(/[ \t]+#.*$/u, "").trim();
+}
+
 function parseSkillDocument(markdown: string, expectedName: string): SkillDocument {
-  const frontmatterMatch = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(markdown);
+  const frontmatterMatch = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)([\s\S]*)$/u.exec(markdown);
   if (!frontmatterMatch) {
     throw new Error(`Caveman skill "${expectedName}" has invalid frontmatter.`);
   }
@@ -121,28 +137,34 @@ function parseSkillDocument(markdown: string, expectedName: string): SkillDocume
 
   for (let index = 0; index < frontmatterLines.length; index += 1) {
     const line = frontmatterLines[index] ?? "";
-    const nameMatch = /^name:\s*(.*?)\s*$/.exec(line);
-    if (nameMatch) {
-      name = nameMatch[1];
+    const field = /^([A-Za-z0-9_-]+):(?:[ \t]*(.*))?$/u.exec(line);
+    if (!field) continue;
+
+    const fieldName = field[1] ?? "";
+    const value = field[2] ?? "";
+    const block = /^[|>](?:[+-]?\d|[+-]|\d[+-])?$/u.test(value.trim());
+    let parsedValue: string;
+    if (block) {
+      const blockLines: string[] = [];
+      while (index + 1 < frontmatterLines.length) {
+        const nextLine = frontmatterLines[index + 1] ?? "";
+        if (nextLine !== "" && !/^[ \t]+/u.test(nextLine)) break;
+        blockLines.push(nextLine.trim());
+        index += 1;
+      }
+      const blockContent = blockLines.join("\n");
+      parsedValue = value.trim().startsWith(">")
+        ? foldDescriptionLines(blockLines)
+        : blockContent.trim();
+    } else {
+      parsedValue = parseFrontmatterScalar(value, expectedName);
+    }
+
+    if (fieldName === "name") {
+      name = parsedValue;
       continue;
     }
-
-    if (!/^description:\s*>[+-]?\s*$/.test(line)) continue;
-
-    const descriptionLines: string[] = [];
-    while (index + 1 < frontmatterLines.length) {
-      const nextLine = frontmatterLines[index + 1] ?? "";
-      if (nextLine.trim() === "") {
-        descriptionLines.push("");
-        index += 1;
-        continue;
-      }
-      if (!/^[ \t]+/.test(nextLine)) break;
-
-      descriptionLines.push(nextLine.trimStart());
-      index += 1;
-    }
-    description = foldDescriptionLines(descriptionLines);
+    if (fieldName === "description") description = parsedValue;
   }
 
   if (!name || name !== expectedName) {
@@ -159,13 +181,43 @@ function parseSkillDocument(markdown: string, expectedName: string): SkillDocume
   return { name, description, content };
 }
 
-async function loadCavemanSkills(): Promise<SkillInfo[]> {
+async function readInstalledSkill(
+  installedRoot: string,
+  name: (typeof CAVEMAN_SKILL_NAMES)[number],
+): Promise<{ path: string; markdown: string }> {
+  if (!path.isAbsolute(installedRoot)) {
+    throw new TypeError("The installed Caveman asset root must be an absolute path.");
+  }
+
+  const root = await realpath(installedRoot);
+  const relativePath = path.join("skills", name, "SKILL.md");
+  const skillPath = await realpath(path.resolve(root, relativePath));
+  const relativeSkillPath = path.relative(root, skillPath);
+  if (
+    relativeSkillPath === "" ||
+    relativeSkillPath === ".." ||
+    relativeSkillPath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeSkillPath)
+  ) {
+    throw new Error(`Installed Caveman asset escapes its payload root: ${relativePath}`);
+  }
+
+  let markdown: string;
+  try {
+    markdown = await readFile(skillPath, "utf8");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to read installed Caveman asset "${relativePath}": ${detail}`, { cause: error });
+  }
+  return { path: skillPath, markdown };
+}
+
+async function loadCavemanSkills(installedRoot: string): Promise<SkillInfo[]> {
   return Promise.all(CAVEMAN_SKILL_NAMES.map(async (expectedName) => {
-    const skillPath = path.join(CAVEMAN_PACKAGE_ROOT, "skills", expectedName, "SKILL.md");
-    const markdown = await readFile(skillPath, "utf8");
+    const { path: skillPath, markdown } = await readInstalledSkill(installedRoot, expectedName);
     const document = parseSkillDocument(markdown, expectedName);
 
-    // Skill.Info brands these strings; the pinned upstream frontmatter supplies
+    // Skill.Info brands these strings; the installed frontmatter supplies
     // the validated values used by the runtime schema.
     return {
       id: document.name,
@@ -179,8 +231,9 @@ async function loadCavemanSkills(): Promise<SkillInfo[]> {
 
 export async function registerCavemanSkills(
   ctx: Pick<Context, "skill">,
+  installedRoot: string,
 ): Promise<Registration> {
-  const skills = await loadCavemanSkills();
+  const skills = await loadCavemanSkills(installedRoot);
 
   return ctx.skill.transform((editor) => {
     for (const skill of skills) {
