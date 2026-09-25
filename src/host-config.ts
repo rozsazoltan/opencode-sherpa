@@ -2,15 +2,23 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, rmd
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
+import {
+  applyEdits,
+  createScanner,
+  findNodeAtLocation,
+  modify,
+  parse,
+  parseTree,
+  SyntaxKind,
+  type Node,
+  type ParseError,
+} from "jsonc-parser";
 
 const CONFIG_FILENAMES = ["opencode.jsonc", "opencode.json"] as const;
 const STATE_FILENAME = ".sherpa-owned.json";
 const PENDING_FILENAME = ".sherpa-sync-pending.json";
 const LOCK_DIRECTORY = ".sherpa-sync.lock";
-const CAVEMAN_ROOT = fileURLToPath(new URL(".", import.meta.resolve("caveman-installer/package.json")));
 
 const PLUGINS = [
   { name: "oh-my-opencode-slim", selector: "oh-my-opencode-slim@2" },
@@ -20,41 +28,19 @@ const PLAYWRIGHT = {
   name: "opencode-playwright",
   selector: "opencode-playwright@git+https://github.com/rozsazoltan/opencode-playwright.git#f06567970c9b10ec845c0b8aa1df816d2e6f7333",
 };
-const AGENT_NAMES = ["cavecrew-investigator", "cavecrew-builder", "cavecrew-reviewer"] as const;
-const COMMANDS: Record<string, { description: string; template: string }> = {
-  caveman: {
-    description: "Switch Caveman mode for this session",
-    template: "Apply the caveman skill with level '$ARGUMENTS' (default full, off disables it).",
-  },
-  "caveman-commit": {
-    description: "Draft a concise Conventional Commit message",
-    template: "Use the caveman-commit skill for this request: $ARGUMENTS",
-  },
-  "caveman-review": {
-    description: "Review changes in concise Caveman format",
-    template: "Use the caveman-review skill to review: $ARGUMENTS",
-  },
-  "caveman-help": {
-    description: "Show the Caveman quick reference",
-    template: "Use the caveman-help skill to show the OpenCode Caveman reference.",
-  },
-  "caveman-stats": {
-    description: "Report available session usage without guessed savings",
-    template: "Use the caveman-stats skill. Report only measured OpenCode session usage, if available.",
-  },
-  "caveman-compress": {
-    description: "Compress prose in a natural-language file",
-    template: "Use the caveman-compress skill for this file: $ARGUMENTS. Confirm a safe backup before editing.",
-  },
-};
 
 type JsonObject = Record<string, unknown>;
-interface OwnedState {
+interface OwnedStateV1 {
   version: 1;
   plugins: string[];
   agents: Record<string, unknown>;
   commands: Record<string, unknown>;
 }
+interface OwnedStateV2 {
+  version: 2;
+  plugins: string[];
+}
+type OwnedState = OwnedStateV1 | OwnedStateV2;
 interface PendingSync {
   version: 1;
   beforeConfig: string;
@@ -82,61 +68,29 @@ function object(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function emptyState(): OwnedState {
-  return { version: 1, plugins: [], agents: {}, commands: {} };
+function emptyState(): OwnedStateV2 {
+  return { version: 2, plugins: [] };
+}
+
+function validateState(value: unknown): OwnedState {
+  if (object(value) && Array.isArray(value.plugins) &&
+      value.plugins.every((item) => typeof item === "string")) {
+    if (value.version === 1 && object(value.agents) && object(value.commands)) {
+      return value as unknown as OwnedStateV1;
+    }
+    if (value.version === 2) return value as unknown as OwnedStateV2;
+  }
+  throw new Error("Sherpa state file is invalid.");
 }
 
 function readState(file: string): OwnedState {
   if (!existsSync(file)) return emptyState();
   if (lstatSync(file).isSymbolicLink()) throw new Error("Sherpa state file must not be a symlink.");
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(file, "utf8"));
+    return validateState(JSON.parse(readFileSync(file, "utf8")) as unknown);
   } catch {
     throw new Error("Sherpa state file is invalid.");
   }
-  if (!object(parsed) || parsed.version !== 1 || !Array.isArray(parsed.plugins) ||
-      !parsed.plugins.every((item) => typeof item === "string") ||
-      !object(parsed.agents) || !object(parsed.commands)) {
-    throw new Error("Sherpa state file is invalid.");
-  }
-  return parsed as unknown as OwnedState;
-}
-
-function agentDefinition(name: string): JsonObject {
-  const document = readFileSync(path.join(CAVEMAN_ROOT, "agents", `${name}.md`), "utf8");
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/u.exec(document);
-  if (!match?.[1]?.includes(`name: ${name}`) || match[2] === undefined) {
-    throw new Error(`Pinned Caveman agent ${name} has invalid frontmatter.`);
-  }
-  const description = /^description: >\r?\n((?:[ \t]+.*\r?\n)+)/mu.exec(match[1]);
-  if (!description?.[1]) throw new Error(`Pinned Caveman agent ${name} has no description.`);
-  let system: string = match[2];
-  if (name === "cavecrew-reviewer") {
-    const original = "`Bash` only for `git diff`/`git log -p`/`git show`. No mutating commands.";
-    if (!system.includes(original)) throw new Error("Pinned Caveman reviewer instructions have changed.");
-    system = system.replace(original,
-      "Shell is unavailable. Review only the diff or file excerpts supplied by the parent prompt. If missing, request that material; never claim to have inspected Git state.");
-  }
-  if (name === "cavecrew-investigator") {
-    const original = "`Bash` for `git log -S`/`git grep`/`find` when faster.";
-    if (!system.includes(original)) throw new Error("Pinned Caveman investigator instructions have changed.");
-    system = system.replace(original, "Shell is unavailable; use only read-only search and file tools.");
-  }
-  const result: JsonObject = {
-    description: description[1].trim().replace(/\s+/gu, " "),
-    mode: "subagent",
-    system,
-  };
-  if (name !== "cavecrew-builder") {
-    result.permissions = [
-      { action: "edit", resource: "*", effect: "deny" },
-      { action: "shell", resource: "*", effect: "deny" },
-    ];
-  } else {
-    result.permissions = [{ action: "shell", resource: "*", effect: "deny" }];
-  }
-  return result;
 }
 
 function same(a: unknown, b: unknown): boolean {
@@ -157,6 +111,134 @@ function apply(text: string, keys: (string | number)[], value: unknown): string 
   return applyEdits(text, modify(text, keys, value, {
     formattingOptions: { insertSpaces: true, tabSize: 2, eol },
   }));
+}
+
+interface DesiredPluginEntry {
+  value: unknown;
+  sourceIndex?: number;
+}
+
+function pluginArrayNode(text: string): Node {
+  const root = parseTree(text, [], { allowTrailingComma: true });
+  const array = root && findNodeAtLocation(root, ["plugins"]);
+  if (!array || array.type !== "array") throw new Error("Host plugins must be a package selector array.");
+  return array;
+}
+
+function commaBetween(text: string, start: number, end: number): { offset: number; length: number } | undefined {
+  const scanner = createScanner(text, false);
+  scanner.setPosition(start);
+  while (scanner.scan() !== SyntaxKind.EOF) {
+    const offset = scanner.getTokenOffset();
+    if (offset >= end) return undefined;
+    if (scanner.getToken() === SyntaxKind.CommaToken) {
+      return { offset, length: scanner.getTokenLength() };
+    }
+  }
+  return undefined;
+}
+
+function lineStart(text: string, offset: number): number {
+  return text.lastIndexOf("\n", offset - 1) + 1;
+}
+
+function leadingIndent(text: string, offset: number): string | undefined {
+  const start = lineStart(text, offset);
+  const prefix = text.slice(start, offset);
+  return /^[\t ]*$/u.test(prefix) ? prefix : undefined;
+}
+
+function removePluginAt(text: string, index: number): string {
+  const array = pluginArrayNode(text);
+  const items = array.children ?? [];
+  const item = items[index];
+  if (!item) throw new Error("Host plugins changed while applying Sherpa edits.");
+
+  let start = item.offset;
+  let end = item.offset + item.length;
+  if (items.length > 1 && index < items.length - 1) {
+    const next = items[index + 1]!;
+    const comma = commaBetween(text, end, next.offset);
+    if (!comma) throw new Error("Host plugins array has an invalid separator.");
+    end = comma.offset + comma.length;
+    start = leadingIndent(text, start) === undefined ? start : lineStart(text, start);
+  } else if (items.length > 1) {
+    const previous = items[index - 1]!;
+    const comma = commaBetween(text, previous.offset + previous.length, start);
+    if (!comma) throw new Error("Host plugins array has an invalid separator.");
+    start = comma.offset;
+  } else {
+    const closeOffset = array.offset + array.length - 1;
+    const trailingComma = commaBetween(text, end, closeOffset);
+    if (trailingComma) end = trailingComma.offset + trailingComma.length;
+    if (leadingIndent(text, start) !== undefined) start = lineStart(text, start);
+  }
+
+  return applyEdits(text, [{ offset: start, length: end - start, content: "" }]);
+}
+
+function appendPlugin(text: string, value: unknown): string {
+  const array = pluginArrayNode(text);
+  const items = array.children ?? [];
+  const closeOffset = array.offset + array.length - 1;
+  const valueText = JSON.stringify(value);
+  const gapStart = items.length === 0 ? array.offset + 1 : items.at(-1)!.offset + items.at(-1)!.length;
+  const gap = text.slice(gapStart, closeOffset);
+
+  if (items.length > 0 && !commaBetween(text, gapStart, closeOffset)) {
+    const last = items.at(-1)!;
+    text = applyEdits(text, [{ offset: last.offset + last.length, length: 0, content: "," }]);
+  }
+
+  const updatedArray = pluginArrayNode(text);
+  const updatedCloseOffset = updatedArray.offset + updatedArray.length - 1;
+  const multiline = /[\r\n]/u.test(text.slice(updatedArray.offset, updatedCloseOffset));
+  if (multiline) {
+    const closeLineStart = lineStart(text, updatedCloseOffset);
+    const closeIndent = text.slice(closeLineStart, updatedCloseOffset);
+    const firstItem = updatedArray.children?.[0];
+    const itemIndent = (firstItem && leadingIndent(text, firstItem.offset)) ??
+      `${leadingIndent(text, updatedArray.offset) ?? ""}  `;
+    if (/^[\t ]*$/u.test(closeIndent) && closeLineStart > updatedArray.offset) {
+      return applyEdits(text, [{
+        offset: closeLineStart,
+        length: 0,
+        content: `${itemIndent}${valueText}${text.includes("\r\n") ? "\r\n" : "\n"}`,
+      }]);
+    }
+    const eol = text.includes("\r\n") ? "\r\n" : "\n";
+    const fallbackIndent = itemIndent;
+    return applyEdits(text, [{
+      offset: updatedCloseOffset,
+      length: 0,
+      content: `${eol}${fallbackIndent}${valueText}`,
+    }]);
+  }
+
+  const needsSpace = gap.length === 0 || !/[\t ]$/u.test(gap);
+  return applyEdits(text, [{
+    offset: updatedCloseOffset,
+    length: 0,
+    content: `${needsSpace ? " " : ""}${valueText}`,
+  }]);
+}
+
+function applyPluginEntries(text: string, sourceEntries: unknown[], desiredEntries: DesiredPluginEntry[]): string {
+  const retained = new Set(desiredEntries.flatMap((entry) =>
+    entry.sourceIndex === undefined ? [] : [entry.sourceIndex]));
+
+  for (const entry of desiredEntries) {
+    if (entry.sourceIndex !== undefined && !same(sourceEntries[entry.sourceIndex], entry.value)) {
+      text = apply(text, ["plugins", entry.sourceIndex], entry.value);
+    }
+  }
+
+  const removed = sourceEntries.map((_, index) => index).filter((index) => !retained.has(index)).reverse();
+  for (const index of removed) text = removePluginAt(text, index);
+  for (const entry of desiredEntries) {
+    if (entry.sourceIndex === undefined) text = appendPlugin(text, entry.value);
+  }
+  return text;
 }
 
 function writeAtomic(file: string, value: string, mode: number): void {
@@ -201,13 +283,20 @@ function recoverPending(directory: string, configFile: string, stateFile: string
   } catch {
     throw new Error("Sherpa pending journal is invalid; host config was not modified.");
   }
-  if (!object(value) || value.version !== 1 || typeof value.beforeConfig !== "string" ||
-      typeof value.afterConfig !== "string" || typeof value.afterState !== "string" ||
-      (value.beforeState !== null && typeof value.beforeState !== "string") ||
-      !object(value.nextState) || digest(stateText(value.nextState as unknown as OwnedState)) !== value.afterState) {
-    throw new Error("Sherpa pending journal is invalid; host config was not modified.");
+  let pending: PendingSync | undefined;
+  if (object(value) && value.version === 1 && typeof value.beforeConfig === "string" &&
+      typeof value.afterConfig === "string" && typeof value.afterState === "string" &&
+      (value.beforeState === null || typeof value.beforeState === "string")) {
+    try {
+      const nextState = validateState(value.nextState);
+      if (digest(stateText(nextState)) === value.afterState) {
+        pending = { ...value, nextState } as unknown as PendingSync;
+      }
+    } catch {
+      // Invalid state payloads make the entire recovery journal unsafe to apply.
+    }
   }
-  const pending = value as unknown as PendingSync;
+  if (!pending) throw new Error("Sherpa pending journal is invalid; host config was not modified.");
   const configHash = digest(readFileSync(configFile, "utf8"));
   const journalHash = optionalDigest(stateFile);
   if (configHash === pending.afterConfig && journalHash === pending.beforeState) {
@@ -247,7 +336,25 @@ function performSync(directory: string, enablePlaywright: boolean): boolean {
   if (errors.length || !object(parsed)) throw new Error("Host config is not a valid JSONC object.");
   let current: JsonObject = parsed;
   const state = readState(stateFile);
-  const next: OwnedState = emptyState();
+  const next = emptyState();
+
+  // Version 1 tracked Sherpa-installed host agents and commands. Retire only
+  // definitions that still exactly match that ownership record.
+  if (state.version === 1) {
+    for (const section of ["agents", "commands"] as const) {
+      if (current[section] !== undefined && !object(current[section])) {
+        throw new Error(`Host ${section} must be an object.`);
+      }
+      for (const [name, previous] of Object.entries(state[section])) {
+        current = parse(text) as JsonObject;
+        const definitions = current[section];
+        if (object(definitions) && Object.hasOwn(definitions, name) && same(definitions[name], previous)) {
+          text = apply(text, [section, name], undefined);
+        }
+      }
+    }
+    current = parse(text) as JsonObject;
+  }
 
   const desiredPlugins = enablePlaywright ? [...PLUGINS, PLAYWRIGHT] : [...PLUGINS];
   if (current.plugins !== undefined && (!Array.isArray(current.plugins) ||
@@ -255,53 +362,37 @@ function performSync(directory: string, enablePlaywright: boolean): boolean {
     throw new Error("Host plugins must be a package selector array.");
   }
   const pluginEntries = (current.plugins ?? []) as unknown[];
-  for (let index = pluginEntries.length - 1; index >= 0; index--) {
-    const selector = packageOf(pluginEntries[index]);
-    if (selector && typeof pluginEntries[index] === "string" &&
-        state.plugins.includes(selector) &&
-        !desiredPlugins.some((plugin) => matchesPackage(selector, plugin.name))) {
-      text = apply(text, ["plugins", index], undefined);
-    }
-  }
+  const desiredEntries: DesiredPluginEntry[] = pluginEntries
+    .map((value, sourceIndex) => ({ value, sourceIndex }))
+    .filter(({ value }) => typeof value !== "string" || !state.plugins.includes(value) ||
+      desiredPlugins.some((plugin) => matchesPackage(value, plugin.name)));
   for (const plugin of desiredPlugins) {
-    current = parse(text) as JsonObject;
-    const entries = (current.plugins ?? []) as unknown[];
-    const foundIndex = entries.findIndex((entry) => matchesPackage(packageOf(entry) ?? "", plugin.name));
-    if (foundIndex < 0) {
-      text = current.plugins === undefined
-        ? apply(text, ["plugins"], [plugin.selector])
-        : apply(text, ["plugins", entries.length], plugin.selector);
+    const matchingIndices = desiredEntries.flatMap((entry, index) =>
+      matchesPackage(packageOf(entry.value) ?? "", plugin.name) ? [index] : []);
+    const ownedIndices = matchingIndices.filter((index) => typeof desiredEntries[index]!.value === "string" &&
+      state.plugins.includes(desiredEntries[index]!.value as string));
+    const userIndices = matchingIndices.filter((index) => !ownedIndices.includes(index));
+
+    if (userIndices.length > 0) {
+      // A user selector takes precedence; remove only exact unchanged Sherpa entries.
+      for (const index of ownedIndices.reverse()) desiredEntries.splice(index, 1);
+    } else if (ownedIndices.length > 0) {
+      const keepIndex = ownedIndices.find((index) => desiredEntries[index]!.value === plugin.selector) ?? ownedIndices[0]!;
+      desiredEntries[keepIndex]!.value = plugin.selector;
+      for (const index of ownedIndices.reverse()) {
+        if (index !== keepIndex) desiredEntries.splice(index, 1);
+      }
       next.plugins.push(plugin.selector);
-    } else if (state.plugins.includes(packageOf(entries[foundIndex])!) &&
-               same(entries[foundIndex], packageOf(entries[foundIndex]))) {
-      if (entries[foundIndex] !== plugin.selector) text = apply(text, ["plugins", foundIndex], plugin.selector);
+    } else if (matchingIndices.length === 0) {
+      desiredEntries.push({ value: plugin.selector });
       next.plugins.push(plugin.selector);
     }
   }
 
-  for (const [section, desired] of [
-    ["agents", Object.fromEntries(AGENT_NAMES.map((name) => [name, agentDefinition(name)]))],
-    ["commands", COMMANDS],
-  ] as const) {
-    current = parse(text) as JsonObject;
-    if (current[section] !== undefined && !object(current[section])) {
-      throw new Error(`Host ${section} must be an object.`);
-    }
-    for (const [name, previous] of Object.entries(state[section])) {
-      if (Object.hasOwn(desired, name)) continue;
-      current = parse(text) as JsonObject;
-      if (same((current[section] as JsonObject | undefined)?.[name], previous)) {
-        text = apply(text, [section, name], undefined);
-      }
-    }
-    for (const [name, definition] of Object.entries(desired)) {
-      current = parse(text) as JsonObject;
-      const existing = (current[section] as JsonObject | undefined)?.[name];
-      if (existing === undefined || (Object.hasOwn(state[section], name) && same(existing, state[section][name]))) {
-        if (!same(existing, definition)) text = apply(text, [section, name], definition);
-        next[section][name] = definition;
-      }
-    }
+  if (current.plugins === undefined) {
+    text = apply(text, ["plugins"], desiredEntries.map((entry) => entry.value));
+  } else if (!same(pluginEntries, desiredEntries.map((entry) => entry.value))) {
+    text = applyPluginEntries(text, pluginEntries, desiredEntries);
   }
 
   if (text === original && same(next, state)) return false;

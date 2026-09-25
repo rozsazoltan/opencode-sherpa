@@ -106,7 +106,7 @@ test("adapts dependent Caveman skills to OpenCode without running Claude hooks",
   expect(added.get("caveman-compress")?.content).toContain("## Compression Rules");
   expect(added.get("caveman-compress")?.content).not.toContain("python3 -m scripts");
   expect(added.get("caveman-stats")?.content).toContain("unavailable");
-  expect(added.get("cavecrew")?.content).toContain("Restart OpenCode");
+  expect(added.get("cavecrew")?.content).toContain("registered by Sherpa at runtime in OpenCode");
 });
 
 test("requires the main thread to provide review material to OpenCode cavecrew-reviewer", async () => {

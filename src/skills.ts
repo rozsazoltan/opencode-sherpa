@@ -29,9 +29,9 @@ caveman-compress, caveman-stats, and cavecrew. The three cavecrew agents are
 cavecrew-investigator, cavecrew-builder, and cavecrew-reviewer.
 
 The /caveman, /caveman-help, /caveman-compress, /caveman-stats,
-/caveman-commit, and /caveman-review commands are provided by Sherpa after
-the host configuration sync and restart. Caveman mode is activated explicitly
-for the current session; Claude Code hooks and CAVEMAN_DEFAULT_MODE are not
+/caveman-commit, and /caveman-review commands are provided by Sherpa at
+runtime; no host configuration sync or restart is required. Caveman mode is
+activated explicitly for the current session; Claude Code hooks and CAVEMAN_DEFAULT_MODE are not
 installed here. Stop with "normal mode" or /caveman off. The stats skill only
 reports session usage when OpenCode actually supplies it; savings are unknown.
 `;
@@ -77,7 +77,7 @@ ${rules}`;
       .replace(/`feature-dev:code-architect`/gu, "the main thread")
       .replace(/`Code Reviewer` \(vanilla\)/gu, "a general-purpose reviewer")
       .replace(/(?=Cavecrew =)/u,
-        "The cavecrew subagents are configured by Sherpa in OpenCode's global host config. Restart OpenCode after first setup.\n\n")
+        "The cavecrew subagents are registered by Sherpa at runtime in OpenCode.\n\n")
       .replace(chainingHeading, `## OpenCode reviewer handoff
 
 The OpenCode cavecrew-reviewer cannot run shell commands or inspect Git state. Before invoking it, the main thread MUST provide the relevant diff, or relevant file excerpts showing the changes and enough surrounding context, in the prompt/context. Do not ask it to run \`git diff\`, \`git log\`, or \`git show\`, and do not claim it has read a diff, branch, or repository unless that content was explicitly supplied. If the needed diff or excerpts are unavailable, obtain them in the main thread first.

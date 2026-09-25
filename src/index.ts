@@ -1,6 +1,8 @@
 import { Plugin } from "@opencode/plugin";
 import type { Context } from "@opencode/plugin/promise/plugin";
 import type { Registration } from "@opencode/plugin/promise/registration";
+import { registerCavecrewAgents } from "./agents.ts";
+import { registerCavemanCommands } from "./commands.ts";
 import { createEngineeringInstructions } from "./instructions.ts";
 import { registerRemoteMcpServers } from "./mcp.ts";
 import { registerCavemanSkills } from "./skills.ts";
@@ -44,10 +46,19 @@ export const SherpaPlugin = Plugin.define({
       registrations.push(await ctx.permission.hook("evaluate", evaluatePermission));
       registrations.push(await registerRemoteMcpServers(ctx, ctx.options?.mcp));
       registrations.push(await registerCavemanSkills(ctx));
-      if (ctx.options?.hostSync === true) await syncHostConfig();
+      registrations.push(await registerCavecrewAgents(ctx));
+      registrations.push(await registerCavemanCommands(ctx));
     } catch (error) {
       await disposeRegistrations(registrations, true);
       throw error;
+    }
+
+    if (ctx.options?.hostSync === true) {
+      try {
+        await syncHostConfig();
+      } catch {
+        console.warn("OpenCode Sherpa: optional host config sync failed; runtime registrations remain active.");
+      }
     }
 
     return async () => {
