@@ -9,6 +9,49 @@
 - Registers remote MCP servers `github` (`https://api.githubcopilot.com/mcp/`), `jina` (`https://mcp.jina.ai/v1`), `context7` (`https://mcp.context7.com/mcp`), and `gh_grep` (`https://mcp.grep.app`) only when their names are not already configured, preserving existing entries.
 Sherpa only manages its own runtime registrations. External plugins such as Caveman, Slim, DCP, and Playwright must be configured directly in OpenCode.
 
+## Bundled tuning content
+
+Sherpa discovers its own Markdown content below `tuning/` at plugin startup. You do not list filenames in the plugin configuration or loader code. Add content to the folder matching its purpose:
+
+```text
+tuning/
+├── instructions/
+│   ├── 00-core.md
+│   └── workflow/review.md
+├── skills/
+│   └── code-review/
+│       ├── SKILL.md
+│       └── references/checklist.md
+└── commands/
+    ├── review.md
+    └── git/status.md
+```
+
+- Every Markdown file under `tuning/instructions/` is read recursively and appended to Sherpa's built-in instructions for each model context request. Files are combined in deterministic, relative-path order; numeric prefixes such as `00-` and `10-` make the intended order clear. Keep this directory for short, generally applicable rules because all of it is sent with every request. These are not written to a global `AGENTS.md`.
+- Each `tuning/skills/<skill-id>/SKILL.md` is registered as an individual OpenCode skill. Use YAML frontmatter with a `description` (required), optional `name`, and optional `autoinvoke` boolean; the Markdown body is the skill content. Nested directories are supported and form slash-separated IDs. Supporting files can live beside `SKILL.md`. If an ID already exists, Sherpa keeps the existing skill and skips the packaged definition.
+
+  ```md
+  ---
+  name: Code Review
+  description: Review a change for correctness and missing tests.
+  autoinvoke: false
+  ---
+
+  Inspect the requested change and report actionable findings.
+  ```
+
+- Each Markdown file under `tuning/commands/` becomes a separate slash command. Its relative path (without `.md`) is the command name, so `git/status.md` becomes `/git/status`. Optional YAML frontmatter supports only `description`; other fields are rejected. The body is a prompt template, not a shell script. Sherpa replaces every literal `$ARGUMENTS` with all entered arguments; it does not support positional arguments or shell interpolation. If the template has no placeholder, non-empty arguments are appended after a blank line.
+
+  ```md
+  ---
+  description: Review supplied files for correctness.
+  ---
+
+  Review $ARGUMENTS and report actionable findings.
+  ```
+
+The loader reads the packaged Sherpa tree, ignores symbolic links within it, and rejects a symbolic `tuning/` root. It reports invalid skill/command frontmatter during plugin setup instead of silently skipping those definitions. Content files sort by relative path, and Sherpa registers commands in that order. Command name collisions follow OpenCode's transform registration order; its command editor has no collision lookup, so a registration may replace an existing command. Content changes take effect after the plugin is reloaded; with a Git-installed package, update the package first. Sherpa does not package custom agents or create a global `AGENTS.md`.
+
 The GitHub MCP entry uses OpenCode-managed OAuth by default. OpenCode generally persists OAuth authorization per machine in host-managed storage, but this plugin does not guarantee that this endpoint interoperates with the host OAuth flow or that authentication survives a restart. Those behaviors have not been runtime-verified.
 
 An alternative is to explicitly set `options.mcp.githubAuth` to `"token-file"`. Optionally set `options.mcp.githubTokenFile` to an absolute path; otherwise the token is read from `~/.config/opencode/.secrets/github-key`, or `$XDG_CONFIG_HOME/opencode/.secrets/github-key` when `XDG_CONFIG_HOME` is absolute. Keep the token out of logs and the repository, and restrict access to the file (for example, owner-only permissions such as mode `600` on POSIX systems). This option reads a local token; it does not generate or rotate credentials.
@@ -76,12 +119,21 @@ bun run typecheck
 │   ├── index.ts
 │   ├── instructions.ts
 │   ├── mcp.ts
-│   └── permissions.ts
-└── test/
-    ├── instructions.test.ts
-    ├── mcp.test.ts
-    ├── permissions.test.ts
-    └── plugin.test.ts
+│   ├── permissions.ts
+│   └── tuning.ts
+├── test/
+│   ├── instructions.test.ts
+│   ├── mcp.test.ts
+│   ├── permissions.test.ts
+│   ├── plugin.test.ts
+│   └── tuning.test.ts
+└── tuning/
+    ├── instructions/
+    │   └── 00-sherpa-principles.md
+    ├── skills/
+    │   └── .gitkeep
+    └── commands/
+        └── .gitkeep
 ```
 
 ## Roadmap

@@ -4,6 +4,7 @@ import type { Registration } from "@opencode/plugin/promise/registration";
 import { createEngineeringInstructions } from "./instructions.ts";
 import { registerRemoteMcpServers } from "./mcp.ts";
 import { createDirectoryPermissionEvaluator } from "./permissions.ts";
+import { loadSherpaTuning, registerSherpaCommands, registerSherpaSkills } from "./tuning.ts";
 
 async function disposeRegistrations(
   registrations: readonly Registration[],
@@ -29,15 +30,23 @@ async function disposeRegistrations(
 export const SherpaPlugin = Plugin.define({
   id: "opencode-sherpa",
   async setup(ctx: Context) {
+    const tuning = loadSherpaTuning();
     const evaluatePermission = createDirectoryPermissionEvaluator(ctx.options);
     const registrations: Registration[] = [];
 
     try {
       registrations.push(await ctx.session.hook("context", ({ system }) => {
-        system.push({ type: "text", text: createEngineeringInstructions(ctx.options?.language) });
+        const text = [createEngineeringInstructions(ctx.options?.language), ...tuning.instructions]
+          .filter((instruction) => instruction.length > 0)
+          .join("\n\n");
+        system.push({ type: "text", text });
       }));
       registrations.push(await ctx.permission.hook("evaluate", evaluatePermission));
       registrations.push(await registerRemoteMcpServers(ctx, ctx.options?.mcp));
+      const skillRegistration = await registerSherpaSkills(ctx, tuning.skills);
+      if (skillRegistration) registrations.push(skillRegistration);
+      const commandRegistration = await registerSherpaCommands(ctx, tuning.commands);
+      if (commandRegistration) registrations.push(commandRegistration);
     } catch (error) {
       await disposeRegistrations(registrations, true);
       throw error;

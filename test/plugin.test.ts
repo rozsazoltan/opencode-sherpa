@@ -55,7 +55,10 @@ test("registers default Sherpa services and disposes them", async () => {
   await contextCallback?.(sessionContext);
   expect(sessionContext.system).toHaveLength(1);
   const systemMessage = sessionContext.system[0];
-  if (systemMessage?.type === "text") expect(systemMessage.text).toMatch(/Use hu for conversation/);
+  if (systemMessage?.type === "text") {
+    expect(systemMessage.text).toMatch(/Use hu for conversation/);
+    expect(systemMessage.text).toMatch(/Prefer simple, minimal, reusable solutions/);
+  }
 
   const permission: PermissionDecision = {
     action: "read",
