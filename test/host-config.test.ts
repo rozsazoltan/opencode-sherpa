@@ -8,6 +8,7 @@ import { syncHostConfig } from "../src/host-config.ts";
 
 const SLIM = "oh-my-opencode-slim@2";
 const DCP = "@tarquinen/opencode-dcp@3";
+const CAVEMAN = "opencode-caveman@git+https://github.com/rozsazoltan/opencode-caveman.git#9410a7fd011fb2b9e2e5cd9166dbf64a12031641";
 const PLAYWRIGHT = "opencode-playwright@git+https://github.com/rozsazoltan/opencode-playwright.git#f06567970c9b10ec845c0b8aa1df816d2e6f7333";
 
 function fixture(config: string, name = "opencode.jsonc") {
@@ -50,11 +51,11 @@ test("adds only external plugins to a clean host config and records v2 ownership
   try {
     expect(await syncHostConfig(host.directory, false)).toBe(true);
     const config = host.read();
-    expect(config.plugins).toEqual([SLIM, DCP]);
+    expect(config.plugins).toEqual([SLIM, DCP, CAVEMAN]);
     expect(config.agents).toBeUndefined();
     expect(config.commands).toBeUndefined();
     const ownership = JSON.parse(readFileSync(path.join(host.directory, ".sherpa-owned.json"), "utf8"));
-    expect(ownership).toEqual({ version: 2, plugins: [SLIM, DCP] });
+    expect(ownership).toEqual({ version: 2, plugins: [SLIM, DCP, CAVEMAN] });
     const first = readFileSync(host.configFile, "utf8");
     expect(await syncHostConfig(host.directory, false)).toBe(false);
     expect(readFileSync(host.configFile, "utf8")).toBe(first);
@@ -81,6 +82,7 @@ test("preserves comments, secrets, and existing user-owned names", async () => {
     expect(config.plugins[0]).toBe("other-plugin");
     expect(config.plugins[1]).toEqual({ package: "oh-my-opencode-slim@1", options: { custom: true } });
     expect(config.plugins).toContain(DCP);
+    expect(config.plugins).toContain(CAVEMAN);
     expect(config.plugins.some((item: string) => typeof item === "string" && item.startsWith("opencode-playwright@git+"))).toBe(true);
     expect(config.plugins.filter((item: unknown) =>
       (typeof item === "string" ? item : item && typeof item === "object" ? (item as any).package : "")
@@ -109,8 +111,8 @@ test("updates an unchanged owned selector but preserves a user-edited selector w
     writeFileSync(ownedFile, JSON.stringify(state));
     expect(await syncHostConfig(host.directory, false)).toBe(true);
     const updated = host.read();
-    expect(updated.plugins).toEqual([SLIM, "@tarquinen/opencode-dcp@user-edited"]);
-    expect(JSON.parse(readFileSync(ownedFile, "utf8")).plugins).toEqual([SLIM]);
+    expect(updated.plugins).toEqual([SLIM, "@tarquinen/opencode-dcp@user-edited", CAVEMAN]);
+    expect(JSON.parse(readFileSync(ownedFile, "utf8")).plugins).toEqual([SLIM, CAVEMAN]);
   } finally {
     host.dispose();
   }
@@ -124,8 +126,8 @@ test("does not duplicate a preexisting object selector while updating an owned p
     const stateFile = path.join(host.directory, ".sherpa-owned.json");
     writeFileSync(stateFile, stateText({ version: 2, plugins: ["oh-my-opencode-slim@1", DCP] }));
     expect(await syncHostConfig(host.directory, false)).toBe(true);
-    expect(host.read().plugins).toEqual([{ package: SLIM, options: { user: true } }, DCP]);
-    expect(JSON.parse(readFileSync(stateFile, "utf8")).plugins).toEqual([DCP]);
+    expect(host.read().plugins).toEqual([{ package: SLIM, options: { user: true } }, DCP, CAVEMAN]);
+    expect(JSON.parse(readFileSync(stateFile, "utf8")).plugins).toEqual([DCP, CAVEMAN]);
   } finally {
     host.dispose();
   }
@@ -157,8 +159,8 @@ test("preserves comments and user object text while adding a plugin and resolvin
     expect(raw).toContain("// Keep this user-owned option comment.");
     expect(raw).toContain(userEntry);
     expect(config.keep).toEqual({ value: 42 });
-    expect(config.plugins).toEqual([{ package: "oh-my-opencode-slim@user", options: { nested: { keep: true } } }, DCP]);
-    expect(JSON.parse(readFileSync(stateFile, "utf8")).plugins).toEqual([DCP]);
+    expect(config.plugins).toEqual([{ package: "oh-my-opencode-slim@user", options: { nested: { keep: true } } }, DCP, CAVEMAN]);
+    expect(JSON.parse(readFileSync(stateFile, "utf8")).plugins).toEqual([DCP, CAVEMAN]);
   } finally {
     host.dispose();
   }
@@ -168,12 +170,12 @@ test("removes only unchanged owned selectors no longer selected for this platfor
   const host = fixture("{}\n");
   try {
     await syncHostConfig(host.directory, true);
-    expect(host.read().plugins).toHaveLength(3);
+    expect(host.read().plugins).toHaveLength(4);
     const config = host.read();
     config.plugins.push(`${PLAYWRIGHT}-user-edited`);
     writeFileSync(host.configFile, JSON.stringify(config, null, 2));
     expect(await syncHostConfig(host.directory, false)).toBe(true);
-    expect(host.read().plugins).toEqual([SLIM, DCP, `${PLAYWRIGHT}-user-edited`]);
+    expect(host.read().plugins).toEqual([SLIM, DCP, CAVEMAN, `${PLAYWRIGHT}-user-edited`]);
   } finally {
     host.dispose();
   }
@@ -207,7 +209,7 @@ test("migrates v1 ownership by removing only unchanged Sherpa agents and command
       "sherpa-edited": { template: "user's command edit" },
       "preexisting-user-command": { template: "not tracked" },
     });
-    expect(JSON.parse(readFileSync(stateFile, "utf8"))).toEqual({ version: 2, plugins: [SLIM, DCP] });
+    expect(JSON.parse(readFileSync(stateFile, "utf8"))).toEqual({ version: 2, plugins: [SLIM, DCP, CAVEMAN] });
   } finally {
     host.dispose();
   }
@@ -220,7 +222,7 @@ test("serializes concurrent syncs and leaves one consistent ownership journal", 
       syncHostConfig(host.directory, false), syncHostConfig(host.directory, false),
     ]);
     expect(results.sort()).toEqual([false, true]);
-    expect(host.read().plugins).toHaveLength(2);
+    expect(host.read().plugins).toHaveLength(3);
     const owned = JSON.parse(readFileSync(path.join(host.directory, ".sherpa-owned.json"), "utf8"));
     expect(owned.version).toBe(2);
     expect(owned.plugins).toEqual(host.read().plugins);
@@ -252,7 +254,7 @@ test("recovers an old v1 pending journal, then migrates its ownership state", as
     expect(await syncHostConfig(host.directory, false)).toBe(true);
     expect(host.read().agents).toEqual({});
     expect(host.read().commands).toEqual({});
-    expect(JSON.parse(readFileSync(stateFile, "utf8"))).toEqual({ version: 2, plugins: [SLIM, DCP] });
+    expect(JSON.parse(readFileSync(stateFile, "utf8"))).toEqual({ version: 2, plugins: [SLIM, DCP, CAVEMAN] });
   } finally {
     host.dispose();
   }
@@ -261,8 +263,8 @@ test("recovers an old v1 pending journal, then migrates its ownership state", as
 test("recovers an interrupted v1-to-v2 state replacement after config replacement", async () => {
   const legacy = legacyState();
   const oldState = stateText(legacy);
-  const nextState = { version: 2, plugins: [SLIM, DCP] };
-  const afterConfig = JSON.stringify({ plugins: [SLIM, DCP], agents: {}, commands: {} }, null, 2) + "\n";
+  const nextState = { version: 2, plugins: [SLIM, DCP, CAVEMAN] };
+  const afterConfig = JSON.stringify({ plugins: [SLIM, DCP, CAVEMAN], agents: {}, commands: {} }, null, 2) + "\n";
   const beforeConfig = JSON.stringify({
     plugins: [SLIM, DCP],
     agents: { "sherpa-owned": { description: "unchanged agent" } },

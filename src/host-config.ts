@@ -23,6 +23,10 @@ const LOCK_DIRECTORY = ".sherpa-sync.lock";
 const PLUGINS = [
   { name: "oh-my-opencode-slim", selector: "oh-my-opencode-slim@2" },
   { name: "@tarquinen/opencode-dcp", selector: "@tarquinen/opencode-dcp@3" },
+  {
+    name: "opencode-caveman",
+    selector: "opencode-caveman@git+https://github.com/rozsazoltan/opencode-caveman.git#9410a7fd011fb2b9e2e5cd9166dbf64a12031641",
+  },
 ] as const;
 const PLAYWRIGHT = {
   name: "opencode-playwright",
