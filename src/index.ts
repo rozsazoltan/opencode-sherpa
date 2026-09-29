@@ -4,7 +4,6 @@ import type { Registration } from "@opencode/plugin/promise/registration";
 import { createEngineeringInstructions } from "./instructions.ts";
 import { registerRemoteMcpServers } from "./mcp.ts";
 import { createDirectoryPermissionEvaluator } from "./permissions.ts";
-import { syncHostConfig } from "./host-config.ts";
 
 async function disposeRegistrations(
   registrations: readonly Registration[],
@@ -30,9 +29,6 @@ async function disposeRegistrations(
 export const SherpaPlugin = Plugin.define({
   id: "opencode-sherpa",
   async setup(ctx: Context) {
-    if (ctx.options?.hostSync !== undefined && typeof ctx.options.hostSync !== "boolean") {
-      throw new TypeError("hostSync must be a boolean.");
-    }
     const evaluatePermission = createDirectoryPermissionEvaluator(ctx.options);
     const registrations: Registration[] = [];
 
@@ -45,14 +41,6 @@ export const SherpaPlugin = Plugin.define({
     } catch (error) {
       await disposeRegistrations(registrations, true);
       throw error;
-    }
-
-    if (ctx.options?.hostSync === true) {
-      try {
-        await syncHostConfig();
-      } catch {
-        console.warn("OpenCode Sherpa: optional host config sync failed; runtime registrations remain active.");
-      }
     }
 
     return async () => {

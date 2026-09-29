@@ -1,8 +1,7 @@
-import { expect, spyOn, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { expect, test } from "bun:test";
 import os from "node:os";
 import path from "node:path";
-import type { Cleanup, Context } from "@opencode/plugin/promise/plugin";
+import type { Context } from "@opencode/plugin/promise/plugin";
 import type { PermissionEvaluation } from "@opencode/plugin/promise/permission";
 import type { SessionContext } from "@opencode/plugin/promise/session";
 import type { MCPEditor } from "@opencode/plugin/promise/mcp";
@@ -10,16 +9,6 @@ import type { Registration } from "@opencode/plugin/promise/registration";
 import SherpaPlugin from "../src/index.ts";
 
 type PermissionDecision = Pick<PermissionEvaluation, "action" | "effect" | "resources">;
-
-let fixtureQueue = Promise.resolve();
-
-async function acquireFixture(): Promise<() => void> {
-  const previous = fixtureQueue;
-  let release = () => {};
-  fixtureQueue = new Promise<void>((resolve) => { release = resolve; });
-  await previous;
-  return release;
-}
 
 test("registers default Sherpa services and disposes them", async () => {
   const disposed: string[] = [];
@@ -92,68 +81,4 @@ test("cleans up earlier registrations if MCP setup rejects", async () => {
 
   await expect(SherpaPlugin.setup(context)).rejects.toBe(failure);
   expect(disposed).toEqual(["permission.evaluate", "session.context"]);
-});
-
-test("syncs only Sherpa external plugin selectors when explicitly enabled", async () => {
-  const release = await acquireFixture();
-  const root = await mkdtemp(path.join(os.tmpdir(), "sherpa-plugin-host-"));
-  const previous = process.env.XDG_CONFIG_HOME;
-  const configDirectory = path.join(root, "opencode");
-  const configPath = path.join(configDirectory, "opencode.jsonc");
-  try {
-    await mkdir(configDirectory);
-    await writeFile(configPath, '{"agents": {}, "commands": {}}\n');
-    process.env.XDG_CONFIG_HOME = root;
-    const context = {
-      options: { hostSync: true },
-      session: { hook: async () => ({ dispose: async () => {} }) },
-      permission: { hook: async () => ({ dispose: async () => {} }) },
-      mcp: { transform: async () => ({ dispose: async () => {} }) },
-    } as unknown as Context;
-
-    const cleanup = await SherpaPlugin.setup(context);
-    const updated = JSON.parse(await readFile(configPath, "utf8"));
-    expect(updated.plugins).toContain("oh-my-opencode-slim@2");
-    expect(updated.plugins).toContain("@tarquinen/opencode-dcp@3");
-    expect(updated.plugins).toContain(
-      "opencode-caveman@git+https://github.com/rozsazoltan/opencode-caveman.git#9410a7fd011fb2b9e2e5cd9166dbf64a12031641",
-    );
-    await cleanup?.();
-  } finally {
-    if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
-    else process.env.XDG_CONFIG_HOME = previous;
-    await rm(root, { recursive: true, force: true });
-    release();
-  }
-});
-
-test("keeps Sherpa running when opt-in host sync fails", async () => {
-  const release = await acquireFixture();
-  const root = await mkdtemp(path.join(os.tmpdir(), "sherpa-plugin-host-failure-"));
-  const previous = process.env.XDG_CONFIG_HOME;
-  const warning = spyOn(console, "warn").mockImplementation(() => {});
-  let cleanup: Cleanup | undefined;
-  try {
-    process.env.XDG_CONFIG_HOME = root;
-    const context = {
-      options: { hostSync: true },
-      session: { hook: async () => ({ dispose: async () => {} }) },
-      permission: { hook: async () => ({ dispose: async () => {} }) },
-      mcp: { transform: async () => ({ dispose: async () => {} }) },
-    } as unknown as Context;
-
-    const registered = await SherpaPlugin.setup(context);
-    if (typeof registered === "function") cleanup = registered;
-    expect(warning).toHaveBeenCalledWith(
-      "OpenCode Sherpa: optional host config sync failed; runtime registrations remain active.",
-    );
-    expect(warning.mock.calls[0]?.[0]).not.toContain(root);
-  } finally {
-    await cleanup?.();
-    warning.mockRestore();
-    if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
-    else process.env.XDG_CONFIG_HOME = previous;
-    await rm(root, { recursive: true, force: true });
-    release();
-  }
 });
