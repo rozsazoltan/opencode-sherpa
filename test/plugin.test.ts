@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Context } from "@opencode/plugin/promise/plugin";
@@ -10,7 +11,12 @@ import SherpaPlugin from "../src/index.ts";
 
 type PermissionDecision = Pick<PermissionEvaluation, "action" | "effect" | "resources">;
 
+async function createProject(): Promise<string> {
+  return mkdtemp(path.join(os.tmpdir(), "sherpa-plugin-test-"));
+}
+
 test("registers default Sherpa services and disposes them", async () => {
+  const project = await createProject();
   const disposed: string[] = [];
   const servers = new Map<string, unknown>();
   let contextCallback: ((input: SessionContext) => void | Promise<void>) | undefined;
@@ -24,7 +30,8 @@ test("registers default Sherpa services and disposes them", async () => {
   } as unknown as MCPEditor;
 
   const context = {
-    options: { language: "hu" },
+    options: { language: "hu", agentSources: [] },
+    location: { project: { directory: project } },
     session: {
       hook: async (_name: "context", callback: (input: SessionContext) => void | Promise<void>) => {
         contextCallback = callback;
@@ -45,49 +52,61 @@ test("registers default Sherpa services and disposes them", async () => {
     },
   } as unknown as Context;
 
-  const cleanup = await SherpaPlugin.setup(context);
-  expect(servers.has("github")).toBe(true);
-  expect(servers.has("jina")).toBe(true);
-  expect(servers.has("context7")).toBe(true);
-  expect(servers.has("gh_grep")).toBe(true);
+  let cleanup: (() => Promise<void> | void) | undefined;
+  try {
+    const registered = await SherpaPlugin.setup(context);
+    if (typeof registered === "function") cleanup = registered;
+    expect(servers.has("github")).toBe(true);
+    expect(servers.has("jina")).toBe(true);
+    expect(servers.has("context7")).toBe(true);
+    expect(servers.has("gh_grep")).toBe(true);
 
-  const sessionContext = { system: [] } as unknown as SessionContext;
-  await contextCallback?.(sessionContext);
-  expect(sessionContext.system).toHaveLength(1);
-  const systemMessage = sessionContext.system[0];
-  expect(systemMessage?.type).toBe("text");
-  const systemText = (systemMessage as { readonly type: "text"; readonly text: string }).text;
-  expect(systemText).toMatch(/Use hu for conversation/);
-  expect(systemText).toMatch(/Prefer simple, minimal, reusable solutions/);
+    const sessionContext = { system: [] } as unknown as SessionContext;
+    await contextCallback?.(sessionContext);
+    expect(sessionContext.system).toHaveLength(1);
+    const systemMessage = sessionContext.system[0];
+    expect(systemMessage?.type).toBe("text");
+    const systemText = (systemMessage as { readonly type: "text"; readonly text: string }).text;
+    expect(systemText).toMatch(/Use hu for conversation/);
+    expect(systemText).toMatch(/Prefer simple, minimal, reusable solutions/);
 
-  const permission: PermissionDecision = {
-    action: "read",
-    effect: "ask",
-    resources: [path.join(os.tmpdir(), "opencode", "uploads", "file.txt")],
-  };
-  await permissionCallback?.(permission);
-  expect(permission.effect).toBe("allow");
+    const permission: PermissionDecision = {
+      action: "read",
+      effect: "ask",
+      resources: [path.join(os.tmpdir(), "opencode", "uploads", "file.txt")],
+    };
+    await permissionCallback?.(permission);
+    expect(permission.effect).toBe("allow");
 
-  await cleanup?.();
-  expect(disposed).toEqual(["mcp.transform", "permission.evaluate", "session.context"]);
+  } finally {
+    await cleanup?.();
+    await rm(project, { recursive: true, force: true });
+  }
 });
 
 test("cleans up earlier registrations if MCP setup rejects", async () => {
+  const project = await createProject();
   const disposed: string[] = [];
   const failure = new Error("MCP transform failed.");
   const context = {
-    options: {},
+    options: { agentSources: [] },
+    location: { project: { directory: project } },
     session: { hook: async () => ({ dispose: async () => { disposed.push("session.context"); throw new Error("Session cleanup failed."); } }) },
     permission: { hook: async () => ({ dispose: async () => { disposed.push("permission.evaluate"); throw undefined; } }) },
     mcp: { transform: async () => { throw failure; } },
   } as unknown as Context;
 
-  await expect(SherpaPlugin.setup(context)).rejects.toBe(failure);
-  expect(disposed).toEqual(["permission.evaluate", "session.context"]);
+  try {
+    await expect(SherpaPlugin.setup(context)).rejects.toBe(failure);
+    expect(disposed).toEqual(["permission.evaluate", "session.context"]);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
 });
 
 test("continues cleanup after disposal errors and rethrows first error", async () => {
   for (const failure of [new Error("MCP cleanup failed."), undefined]) {
+    const project = await createProject();
     const disposed: string[] = [];
     const registration = (name: string, error?: unknown): Registration => ({
       dispose: async () => {
@@ -96,24 +115,29 @@ test("continues cleanup after disposal errors and rethrows first error", async (
       },
     });
     const context = {
-      options: {},
+      options: { agentSources: [] },
+      location: { project: { directory: project } },
       session: { hook: async () => registration("session.context") },
       permission: { hook: async () => registration("permission.evaluate") },
       mcp: { transform: async () => registration("mcp.transform", failure) },
     } as unknown as Context;
 
-    const cleanup = await SherpaPlugin.setup(context);
-    let rejected = false;
-    let actual: unknown;
     try {
-      await cleanup?.();
-    } catch (error) {
-      rejected = true;
-      actual = error;
-    }
+      const cleanup = await SherpaPlugin.setup(context);
+      let rejected = false;
+      let actual: unknown;
+      try {
+        await cleanup?.();
+      } catch (error) {
+        rejected = true;
+        actual = error;
+      }
 
-    expect(rejected).toBe(true);
-    expect(actual).toBe(failure);
-    expect(disposed).toEqual(["mcp.transform", "permission.evaluate", "session.context"]);
+      expect(rejected).toBe(true);
+      expect(actual).toBe(failure);
+      expect(disposed).toEqual(["mcp.transform", "permission.evaluate", "session.context"]);
+    } finally {
+      await rm(project, { recursive: true, force: true });
+    }
   }
 });
