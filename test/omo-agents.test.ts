@@ -74,6 +74,7 @@ test("resolves recursive source prompts, strips Claude metadata, and reuses veri
   try {
     root.write("repository/LICENSE", "MIT License\nPermission is hereby granted.\n");
     root.write("repository/categories/README.md", "Catalog text, not an agent.\n");
+    root.write("repository/categories/01-core-development/api-designer.md", "# API designer for core work\n\nCore API review.\n");
     root.write("repository/categories/api-designer.md", [
       "---",
       "name: API Designer",
@@ -85,6 +86,7 @@ test("resolves recursive source prompts, strips Claude metadata, and reuses veri
       "\nDesign versioned HTTP APIs.",
       "",
     ].join("\n"));
+    root.write("repository/categories/02-language-specialists/api-designer.md", "# API designer for language work\n\nLanguage API review.\n");
     root.write("repository/categories/nested/php-pro.md", [
       "---",
       "description: PHP specialist.",
@@ -113,8 +115,10 @@ test("resolves recursive source prompts, strips Claude metadata, and reuses veri
     const first = await resolveSherpaAgentSources(sources, options);
     expect(first.diagnostics).toEqual([]);
     expect(first.agents.map(({ id }) => id)).toEqual([
-      "sherpa-fixture-categories-api-designer",
-      "sherpa-fixture-categories-nested-php-pro",
+      "sherpa-fixture-api-designer",
+      "sherpa-fixture-core-development-api-designer",
+      "sherpa-fixture-language-specialists-api-designer",
+      "sherpa-fixture-php-pro",
     ]);
     expect(first.agents[0]).toMatchObject({
       description: "Design stable API contracts.",

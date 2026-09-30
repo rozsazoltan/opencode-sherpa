@@ -504,10 +504,18 @@ function markdownFiles(root: string, selected: string): string[] {
   return files;
 }
 
-function slugPath(relativePath: string): string {
-  return relativePath.replace(/\.md$/iu, "")
-    .split("/")
-    .map((segment) => segment.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, ""))
+function slugSegment(segment: string): string {
+  return segment.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "");
+}
+
+function agentName(relativePath: string): string {
+  return slugSegment(path.posix.basename(relativePath).replace(/\.md$/iu, ""));
+}
+
+function pathContext(relativePath: string): string {
+  return path.posix.dirname(relativePath).split("/")
+    .filter((segment) => segment && segment.toLowerCase() !== "categories")
+    .map((segment) => slugSegment(segment.replace(/^\d+[-_. ]*/u, "")))
     .filter(Boolean)
     .join("-");
 }
@@ -530,6 +538,7 @@ function collectAgents(source: ValidatedSource, cached: CachedSource): {
   const agents: SherpaOmoAgent[] = [];
   const diagnostics: SherpaAgentDiagnostic[] = [];
   const visited = new Set<string>();
+  const promptFiles: string[] = [];
   for (const directory of source.directories) {
     const selected = safeSelectedPath(cached.root, directory);
     if (!selected) {
@@ -545,8 +554,7 @@ function collectAgents(source: ValidatedSource, cached: CachedSource): {
     for (const relativePath of markdownFiles(cached.root, selected)) {
       if (visited.has(relativePath)) continue;
       visited.add(relativePath);
-      const slug = slugPath(relativePath);
-      if (!slug) {
+      if (!agentName(relativePath)) {
         diagnostics.push({
           namespace: source.namespace,
           repository: source.repository,
@@ -557,20 +565,32 @@ function collectAgents(source: ValidatedSource, cached: CachedSource): {
         });
         continue;
       }
-      const id = `sherpa-${source.namespace}-${slug}`;
-      const file = path.join(cached.root, ...relativePath.split("/"));
-      try {
-        agents.push(loadSourcePrompt(file, id, source, relativePath));
-      } catch (error) {
-        diagnostics.push({
-          namespace: source.namespace,
-          repository: source.repository,
-          commit: source.commit,
-          code: "invalid-prompt",
-          sourcePath: relativePath,
-          message: error instanceof Error ? error.message : "Agent prompt is invalid.",
-        });
-      }
+      promptFiles.push(relativePath);
+    }
+  }
+
+  const basenameCounts = new Map<string, number>();
+  for (const relativePath of promptFiles) {
+    const name = agentName(relativePath);
+    basenameCounts.set(name, (basenameCounts.get(name) ?? 0) + 1);
+  }
+  for (const relativePath of promptFiles) {
+    const name = agentName(relativePath);
+    const context = (basenameCounts.get(name) ?? 0) > 1 ? pathContext(relativePath) : "";
+    const slug = [context, name].filter(Boolean).join("-");
+    const id = `sherpa-${source.namespace}-${slug}`;
+    const file = path.join(cached.root, ...relativePath.split("/"));
+    try {
+      agents.push(loadSourcePrompt(file, id, source, relativePath));
+    } catch (error) {
+      diagnostics.push({
+        namespace: source.namespace,
+        repository: source.repository,
+        commit: source.commit,
+        code: "invalid-prompt",
+        sourcePath: relativePath,
+        message: error instanceof Error ? error.message : "Agent prompt is invalid.",
+      });
     }
   }
   return { agents, diagnostics };

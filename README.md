@@ -52,7 +52,7 @@ tuning/
 
 ## OMO-Slim specialist agents
 
-Sherpa resolves agent prompts from pinned GitHub repositories at startup. The default source is [VoltAgent's subagent repository](https://github.com/VoltAgent/awesome-claude-code-subagents), pinned to an immutable commit. Sherpa recursively scans core-development, language-specialist, quality/security, developer-experience, and business/product categories, plus only `api-documenter.md` from specialized domains. README files are skipped. Agent IDs derive from source namespace and relative file path; no per-agent registry is required.
+Sherpa resolves agent prompts from pinned GitHub repositories at startup. The default source is [VoltAgent's subagent repository](https://github.com/VoltAgent/awesome-claude-code-subagents), pinned to an immutable commit. Sherpa recursively scans core-development, language-specialist, quality/security, developer-experience, and business/product categories, plus only `api-documenter.md` from specialized domains. README files are skipped. Agent IDs use the source namespace and prompt filename, such as `sherpa-voltagent-javascript-pro`; parent-directory context is added only when filenames collide. No per-agent registry is required.
 
 Use `agentSources` to add repositories and roots or replace defaults. Each source descriptor requires a repository, full commit SHA, namespace, and selected directories. Set `includeDefaults: false` to use only custom sources, or pass an empty array to disable agent sync.
 
