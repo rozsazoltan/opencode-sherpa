@@ -3,6 +3,11 @@ import type { Context } from "@opencode/plugin/promise/plugin";
 import type { Registration } from "@opencode/plugin/promise/registration";
 import { createEngineeringInstructions } from "./instructions.ts";
 import { registerRemoteMcpServers } from "./mcp.ts";
+import {
+  configuredSherpaAgentSources,
+  resolveSherpaAgentSources,
+  syncSherpaOmoAgents,
+} from "./omo-agents.ts";
 import { createDirectoryPermissionEvaluator } from "./permissions.ts";
 import { loadSherpaTuning, registerSherpaCommands, registerSherpaSkills } from "./tuning.ts";
 
@@ -31,10 +36,24 @@ export const SherpaPlugin = Plugin.define({
   id: "opencode-sherpa",
   async setup(ctx: Context) {
     const tuning = loadSherpaTuning();
+    const agentSources = configuredSherpaAgentSources(ctx.options?.agentSources);
+    const agentResolution = await resolveSherpaAgentSources(agentSources);
     const evaluatePermission = createDirectoryPermissionEvaluator(ctx.options);
     const registrations: Registration[] = [];
 
     try {
+      if (agentResolution.diagnostics.length > 0) {
+        for (const diagnostic of agentResolution.diagnostics) {
+          console.warn(`OpenCode Sherpa: agent source ${diagnostic.namespace}: ${diagnostic.message}`);
+        }
+      }
+      const agentSync = agentResolution.agents.length > 0
+        ? syncSherpaOmoAgents(agentResolution.agents, { sources: agentResolution.sources })
+        : undefined;
+      if (agentSync && agentSync.diagnostics.length > 0) {
+        const ids = agentSync.collisions.map(({ id }) => id).join(", ");
+        console.warn(`OpenCode Sherpa: skipped conflicting OMO-Slim agent files: ${ids}.`);
+      }
       registrations.push(await ctx.session.hook("context", ({ system }) => {
         const text = [createEngineeringInstructions(ctx.options?.language), ...tuning.instructions]
           .filter((instruction) => instruction.length > 0)
