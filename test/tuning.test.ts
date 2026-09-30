@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { CommandDefinition } from "@opencode/plugin/promise/command";
@@ -73,6 +73,18 @@ test("discovers and orders tuning Markdown without an explicit file list", () =>
         template: "Review $ARGUMENTS for correctness and missing tests.",
       },
     ]);
+  } finally {
+    source.dispose();
+  }
+});
+
+test("sorts Markdown by relative path when file and directory names share a prefix", () => {
+  const source = fixture();
+  try {
+    source.write("tuning/instructions/a/child.md", "Nested rule.\n");
+    source.write("tuning/instructions/a.md", "Top-level rule.\n");
+
+    expect(loadSherpaTuning(source.root).instructions).toEqual(["Top-level rule.", "Nested rule."]);
   } finally {
     source.dispose();
   }
@@ -225,6 +237,21 @@ test("rejects command frontmatter without a closing delimiter", () => {
   }
 });
 
+test("rejects packaged commands whose derived names collide", () => {
+  const source = fixture();
+  try {
+    const commandDirectory = path.join(source.root, "tuning/commands");
+    source.write("tuning/commands/review.md", "Review changes.\n");
+    source.write("tuning/commands/review.MD", "Review changes again.\n");
+    const filenames = readdirSync(commandDirectory);
+    if (!filenames.includes("review.md") || !filenames.includes("review.MD")) return;
+
+    expect(() => loadSherpaTuning(source.root)).toThrow("Duplicate packaged command name 'review'");
+  } finally {
+    source.dispose();
+  }
+});
+
 test("skips empty skill and command transforms", async () => {
   const transform = () => {
     throw new Error("Empty transform must not register.");
@@ -246,8 +273,9 @@ test("does not follow symbolic links while scanning tuning files", () => {
     const link = path.join(source.root, "tuning/instructions/linked.md");
     try {
       symlinkSync(path.join(source.root, "outside.md"), link);
-    } catch {
-      return;
+    } catch (error) {
+      if (isKnownSymlinkRestriction(error)) return;
+      throw error;
     }
     const tuning = loadSherpaTuning(source.root);
     expect(tuning.instructions).toEqual([]);
@@ -263,11 +291,17 @@ test("does not traverse a symbolic tuning root", () => {
     source.write("outside/instructions/private.md", "Must not be injected.\n");
     try {
       symlinkSync(path.join(source.root, "outside"), path.join(source.root, "tuning"), "dir");
-    } catch {
-      return;
+    } catch (error) {
+      if (isKnownSymlinkRestriction(error)) return;
+      throw error;
     }
     expect(() => loadSherpaTuning(source.root)).toThrow("Tuning content path must be a real directory");
   } finally {
     source.dispose();
   }
 });
+
+function isKnownSymlinkRestriction(error: unknown): boolean {
+  return error instanceof Error && "code" in error &&
+    ["EACCES", "EPERM", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"].includes(String(error.code));
+}

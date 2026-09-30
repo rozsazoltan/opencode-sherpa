@@ -43,7 +43,7 @@ function markdownFiles(directory: string): string[] {
 
   const files: string[] = [];
   const visit = (current: string): void => {
-    for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) => lexicalCompare(a.name, b.name))) {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
       const absolute = path.join(current, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) visit(absolute);
@@ -58,13 +58,12 @@ function markdownFiles(directory: string): string[] {
   ));
 }
 
-function contentName(root: string, file: string, stripFilename: boolean): string {
-  const relative = path.relative(root, file).split(path.sep).join("/");
-  const normalized = stripFilename ? relative.replace(/\.md$/iu, "") : relative;
-  if (!normalized || !CONTENT_NAME.test(normalized)) {
-    throw new Error(`Invalid tuning content name derived from ${file}. Use lowercase kebab-case path segments.`);
+function validatedRelativeName(root: string, target: string): string {
+  const relative = path.relative(root, target).split(path.sep).join("/");
+  if (!relative || !CONTENT_NAME.test(relative)) {
+    throw new Error(`Invalid tuning content name derived from ${target}. Use lowercase kebab-case path segments.`);
   }
-  return normalized;
+  return relative;
 }
 
 function readDocument(file: string, frontmatterRequired = true): { metadata: Record<string, unknown>; body: string } {
@@ -117,7 +116,7 @@ function readSkills(directory: string): PackagedSkill[] {
       if (!description) throw new Error(`Skills require a description in frontmatter: ${file}`);
 
       const skillDirectory = path.dirname(file);
-      const id = contentName(directory, skillDirectory, false);
+      const id = validatedRelativeName(directory, skillDirectory);
       const displayName = optionalString(metadata, "name", file) ?? id;
       const metadataValue = metadata.metadata;
       const metadataRecord = metadataValue === undefined ? {} : metadataValue;
@@ -144,16 +143,31 @@ function readSkills(directory: string): PackagedSkill[] {
 }
 
 function readCommands(directory: string): PackagedCommand[] {
+  const names = new Set<string>();
   return markdownFiles(directory).map((file) => {
     const { metadata, body } = readDocument(file, false);
     assertAllowedKeys(metadata, ["description"], file);
     const description = optionalString(metadata, "description", file);
+    const commandPath = path.join(path.dirname(file), path.basename(file).replace(/\.md$/iu, ""));
+    const name = validatedRelativeName(directory, commandPath);
+    if (names.has(name)) {
+      throw new Error(`Duplicate packaged command name '${name}' derived from ${file}.`);
+    }
+    names.add(name);
     return {
-      name: contentName(directory, file, true),
+      name,
       ...(description === undefined ? {} : { description }),
       template: body,
     };
   });
+}
+
+function renderCommandTemplate(template: string, argumentsText: string): string {
+  if (template.includes("$ARGUMENTS")) {
+    return template.replaceAll("$ARGUMENTS", () => argumentsText);
+  }
+  if (argumentsText.trim().length === 0) return template;
+  return `${template}\n\n${argumentsText}`;
 }
 
 export function loadSherpaTuning(packageRoot = PACKAGE_ROOT): SherpaTuning {
@@ -200,11 +214,7 @@ export async function registerSherpaCommands(
         name: command.name,
         ...(command.description === undefined ? {} : { description: command.description }),
         execute: async ({ sessionID, prompt, delivery }) => {
-          const text = command.template.includes("$ARGUMENTS")
-            ? command.template.replaceAll("$ARGUMENTS", () => prompt.text)
-            : prompt.text.trim().length > 0
-              ? `${command.template}\n\n${prompt.text}`
-              : command.template;
+          const text = renderCommandTemplate(command.template, prompt.text);
           const files = prompt.files?.map(({ uri, name, description }) => ({
             uri,
             ...(name === undefined ? {} : { name }),

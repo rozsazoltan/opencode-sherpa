@@ -55,10 +55,10 @@ test("registers default Sherpa services and disposes them", async () => {
   await contextCallback?.(sessionContext);
   expect(sessionContext.system).toHaveLength(1);
   const systemMessage = sessionContext.system[0];
-  if (systemMessage?.type === "text") {
-    expect(systemMessage.text).toMatch(/Use hu for conversation/);
-    expect(systemMessage.text).toMatch(/Prefer simple, minimal, reusable solutions/);
-  }
+  expect(systemMessage?.type).toBe("text");
+  const systemText = (systemMessage as { readonly type: "text"; readonly text: string }).text;
+  expect(systemText).toMatch(/Use hu for conversation/);
+  expect(systemText).toMatch(/Prefer simple, minimal, reusable solutions/);
 
   const permission: PermissionDecision = {
     action: "read",
@@ -77,11 +77,43 @@ test("cleans up earlier registrations if MCP setup rejects", async () => {
   const failure = new Error("MCP transform failed.");
   const context = {
     options: {},
-    session: { hook: async () => ({ dispose: async () => { disposed.push("session.context"); } }) },
-    permission: { hook: async () => ({ dispose: async () => { disposed.push("permission.evaluate"); } }) },
+    session: { hook: async () => ({ dispose: async () => { disposed.push("session.context"); throw new Error("Session cleanup failed."); } }) },
+    permission: { hook: async () => ({ dispose: async () => { disposed.push("permission.evaluate"); throw undefined; } }) },
     mcp: { transform: async () => { throw failure; } },
   } as unknown as Context;
 
   await expect(SherpaPlugin.setup(context)).rejects.toBe(failure);
   expect(disposed).toEqual(["permission.evaluate", "session.context"]);
+});
+
+test("continues cleanup after disposal errors and rethrows first error", async () => {
+  for (const failure of [new Error("MCP cleanup failed."), undefined]) {
+    const disposed: string[] = [];
+    const registration = (name: string, error?: unknown): Registration => ({
+      dispose: async () => {
+        disposed.push(name);
+        if (name === "mcp.transform") throw error;
+      },
+    });
+    const context = {
+      options: {},
+      session: { hook: async () => registration("session.context") },
+      permission: { hook: async () => registration("permission.evaluate") },
+      mcp: { transform: async () => registration("mcp.transform", failure) },
+    } as unknown as Context;
+
+    const cleanup = await SherpaPlugin.setup(context);
+    let rejected = false;
+    let actual: unknown;
+    try {
+      await cleanup?.();
+    } catch (error) {
+      rejected = true;
+      actual = error;
+    }
+
+    expect(rejected).toBe(true);
+    expect(actual).toBe(failure);
+    expect(disposed).toEqual(["mcp.transform", "permission.evaluate", "session.context"]);
+  }
 });
