@@ -11,8 +11,8 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import * as tar from "tar";
-import { parse as parseYaml } from "yaml";
 import { DEFAULT_SHERPA_AGENT_SOURCES, type SherpaAgentSource } from "./agent-source-catalog.ts";
+import { parseAgentPrompt } from "./agent-prompt.ts";
 import {
   atomicWrite,
   ensureDirectory,
@@ -512,15 +512,7 @@ function slugPath(relativePath: string): string {
     .join("-");
 }
 
-function inferredDescription(id: string, prompt: string): string {
-  const lines = prompt.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
-  const heading = lines.find((line) => /^#{1,6}\s+/u.test(line));
-  const candidate = (heading ?? lines[0] ?? id).replace(/^#{1,6}\s+/u, "").replace(/\s+/gu, " ").trim();
-  const sentence = candidate.split(/(?<=[.!?])\s/u, 1)[0] ?? candidate;
-  return sentence.length > 200 ? `${sentence.slice(0, 197).trimEnd()}...` : sentence;
-}
-
-function parseSourcePrompt(
+function loadSourcePrompt(
   file: string,
   id: string,
   source: ValidatedSource,
@@ -528,49 +520,7 @@ function parseSourcePrompt(
 ): SherpaOmoAgent {
   const bytes = readFileSync(file);
   if (bytes.byteLength > MAX_PROMPT_BYTES) throw new Error(`Agent prompt exceeds ${MAX_PROMPT_BYTES} byte limit.`);
-  const raw = bytes.toString("utf8").replace(/^\uFEFF/u, "");
-  const match = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/u.exec(raw);
-  let metadata: Record<string, unknown> = {};
-  let prompt = raw.trim();
-  if (match) {
-    let parsed: unknown;
-    try {
-      parsed = parseYaml(match[1] ?? "");
-    } catch {
-      throw new Error("Agent prompt frontmatter is malformed YAML.");
-    }
-    if (!isRecord(parsed)) throw new Error("Agent prompt frontmatter must be a YAML object.");
-    metadata = parsed;
-    prompt = raw.slice(match[0].length).trim();
-  } else if (/^---[ \t]*(?:\r?\n|$)/u.test(raw)) {
-    throw new Error("Agent prompt frontmatter has no closing delimiter.");
-  }
-  if (!prompt) throw new Error("Agent prompt body is empty.");
-
-  const rawDescription = metadata.description;
-  if (rawDescription !== undefined && (typeof rawDescription !== "string" || rawDescription.trim() === "")) {
-    throw new Error("Agent prompt description must be a non-empty string.");
-  }
-  const description = typeof rawDescription === "string" ? rawDescription.trim() : inferredDescription(id, prompt);
-  const rawOrchestratorPrompt = metadata.orchestratorPrompt;
-  if (rawOrchestratorPrompt !== undefined &&
-    (typeof rawOrchestratorPrompt !== "string" || rawOrchestratorPrompt.trim() === "")) {
-    throw new Error("Agent prompt orchestratorPrompt must be a non-empty string.");
-  }
-  const orchestratorPrompt = typeof rawOrchestratorPrompt === "string"
-    ? rawOrchestratorPrompt.trim()
-    : `Delegate to @${id} for ${description}`;
-
-  return {
-    id,
-    description,
-    orchestratorPrompt,
-    prompt,
-    sourceNamespace: source.namespace,
-    sourceRepository: source.repository,
-    sourceCommit: source.commit,
-    sourcePath: relativePath,
-  };
+  return parseAgentPrompt(bytes.toString("utf8"), id, source, relativePath);
 }
 
 function collectAgents(source: ValidatedSource, cached: CachedSource): {
@@ -610,7 +560,7 @@ function collectAgents(source: ValidatedSource, cached: CachedSource): {
       const id = `sherpa-${source.namespace}-${slug}`;
       const file = path.join(cached.root, ...relativePath.split("/"));
       try {
-        agents.push(parseSourcePrompt(file, id, source, relativePath));
+        agents.push(loadSourcePrompt(file, id, source, relativePath));
       } catch (error) {
         diagnostics.push({
           namespace: source.namespace,
