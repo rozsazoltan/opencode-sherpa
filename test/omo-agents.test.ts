@@ -5,13 +5,11 @@ import path from "node:path";
 import * as tar from "tar";
 import { parse as parseJsonc } from "jsonc-parser";
 import {
+  configuredSherpaAgentSources,
   defaultSherpaAgentCacheDirectory,
   resolveSherpaAgentSources,
 } from "../src/agent-sources.ts";
-import {
-  configuredSherpaAgentSources,
-  DEFAULT_SHERPA_AGENT_SOURCES,
-} from "../src/agent-source-config.ts";
+import { DEFAULT_SHERPA_AGENT_SOURCES } from "../src/agent-source-catalog.ts";
 import { syncSherpaOmoAgents } from "../src/omo-agents.ts";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";

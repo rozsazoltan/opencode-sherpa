@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import * as tar from "tar";
 import { parse as parseYaml } from "yaml";
-import type { SherpaAgentSource } from "./agent-source-config.ts";
+import { DEFAULT_SHERPA_AGENT_SOURCES, type SherpaAgentSource } from "./agent-source-catalog.ts";
 import {
   atomicWrite,
   ensureDirectory,
@@ -34,6 +34,19 @@ const MAX_EXTRACTED_BYTES = 256 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 20_000;
 const MAX_PROMPT_BYTES = 4 * 1024 * 1024;
 const NETWORK_TIMEOUT_MS = 30_000;
+
+export function configuredSherpaAgentSources(value: unknown): readonly SherpaAgentSource[] {
+  if (value === undefined) return DEFAULT_SHERPA_AGENT_SOURCES;
+  if (Array.isArray(value)) return value as SherpaAgentSource[];
+  if (!isRecord(value) || !Array.isArray(value.sources) ||
+    (value.includeDefaults !== undefined && typeof value.includeDefaults !== "boolean")) {
+    throw new TypeError("agentSources must be an array or an object with a sources array and optional includeDefaults boolean.");
+  }
+  return [
+    ...(value.includeDefaults === false ? [] : DEFAULT_SHERPA_AGENT_SOURCES),
+    ...(value.sources as SherpaAgentSource[]),
+  ];
+}
 
 export interface SherpaOmoAgent {
   readonly id: string;
