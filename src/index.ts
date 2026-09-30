@@ -6,8 +6,8 @@ import { registerRemoteMcpServers } from "./mcp.ts";
 import {
   configuredSherpaAgentSources,
   resolveSherpaAgentSources,
-  syncSherpaOmoAgents,
-} from "./omo-agents.ts";
+} from "./agent-sources.ts";
+import { syncSherpaOmoAgents } from "./omo-agents.ts";
 import { createDirectoryPermissionEvaluator } from "./permissions.ts";
 import { loadSherpaTuning, registerSherpaCommands, registerSherpaSkills } from "./tuning.ts";
 

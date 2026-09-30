@@ -9,8 +9,8 @@ import {
   DEFAULT_SHERPA_AGENT_SOURCES,
   defaultSherpaAgentCacheDirectory,
   resolveSherpaAgentSources,
-  syncSherpaOmoAgents,
-} from "../src/omo-agents.ts";
+} from "../src/agent-sources.ts";
+import { syncSherpaOmoAgents } from "../src/omo-agents.ts";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
