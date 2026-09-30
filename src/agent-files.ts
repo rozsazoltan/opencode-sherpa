@@ -3,6 +3,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -66,6 +67,21 @@ export function inspectPath(target: string): ReturnType<typeof lstatSync> | unde
     finalStat = stat;
   }
   return finalStat;
+}
+
+export function resolveRegularFileTarget(target: string): string | undefined {
+  const parent = inspectPath(path.dirname(target));
+  if (!parent) return undefined;
+  if (!parent.isDirectory()) throw new Error(`File parent must be a directory: ${path.dirname(target)}`);
+
+  const entry = lstatOptional(target);
+  if (!entry) return undefined;
+
+  // Resolve a deliberate config-file link so atomic rename updates its target, not the link itself.
+  const resolved = entry.isSymbolicLink() ? realpathSync(target) : target;
+  const stat = inspectPath(resolved);
+  if (!stat?.isFile()) throw new Error(`Destination must resolve to a regular file: ${target}`);
+  return resolved;
 }
 
 export function ensureDirectory(target: string, mode = 0o700): void {

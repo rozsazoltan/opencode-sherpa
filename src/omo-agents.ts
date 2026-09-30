@@ -12,6 +12,7 @@ import {
   isRecord,
   lexicalCompare,
   readTextFile,
+  resolveRegularFileTarget,
   SHA256,
   stableJson,
 } from "./agent-files.ts";
@@ -141,7 +142,9 @@ function openCodeConfigDirectory(options: SherpaOmoSyncOptions): string {
 }
 
 function selectConfigPath(directory: string): string {
-  const existing = CONFIG_FILES.map((name) => path.join(directory, name)).filter((file) => inspectPath(file));
+  const existing = CONFIG_FILES
+    .map((name) => resolveRegularFileTarget(path.join(directory, name)))
+    .filter((file): file is string => file !== undefined);
   if (existing.length > 1) throw new Error(`Multiple OMO-Slim config files exist; refusing to choose: ${existing.join(", ")}`);
   return existing[0] ?? path.join(directory, CONFIG_FILES[0]);
 }

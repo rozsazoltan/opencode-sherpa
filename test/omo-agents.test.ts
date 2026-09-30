@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as tar from "tar";
@@ -277,6 +277,36 @@ test("refuses ambiguous OMO config files without changing either", () => {
       .toThrow("Multiple OMO-Slim config files exist");
     expect(readFileSync(jsonc, "utf8")).toBe("{}\n");
     expect(readFileSync(json, "utf8")).toBe("{}\n");
+  } finally {
+    root.dispose();
+  }
+});
+
+test("updates a symlinked OMO config target without replacing the link", () => {
+  const root = fixture();
+  try {
+    const configDirectory = path.join(root.root, "config");
+    const externalConfig = root.write("linked-config/oh-my-opencode-slim.jsonc", [
+      "{",
+      "  // Keep the linked config comment.",
+      '  "agents": {},',
+      '  "presets": { "codex": {} }',
+      "}",
+      "",
+    ].join("\n"));
+    mkdirSync(configDirectory, { recursive: true });
+    const configLink = path.join(configDirectory, "oh-my-opencode-slim.jsonc");
+    symlinkSync(externalConfig, configLink);
+
+    const specialist = agent("sherpa-fixture-linked-reviewer");
+    const result = syncSherpaOmoAgents([specialist], { configDirectory });
+
+    expect(result.installed).toEqual([specialist.id]);
+    expect(lstatSync(configLink).isSymbolicLink()).toBe(true);
+    expect(readFileSync(configLink, "utf8")).toContain("Keep the linked config comment.");
+    expect(config(externalConfig).agents[specialist.id].description).toBe(specialist.description);
+    expect(readFileSync(path.join(configDirectory, "oh-my-opencode-slim", `${specialist.id}.md`), "utf8"))
+      .toBe(`${specialist.prompt}\n`);
   } finally {
     root.dispose();
   }
