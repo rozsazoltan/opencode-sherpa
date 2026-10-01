@@ -4,11 +4,11 @@ OpenCode Sherpa is a project-oriented CLI for materializing reusable OpenCode in
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22.18 or newer, or Bun
 - pnpm
 - OpenCode; install OMO-Slim separately if you want specialist-agent sync
 
-Sherpa is installed from GitHub and is not published to the npm registry. Its Node-compatible `dist/` files are committed, so installing the Git dependency does not require a build lifecycle script.
+Sherpa is installed from GitHub and is not published to the npm registry. The package points directly to its TypeScript CLI source; Node.js 22.18+ and Bun can run it without a generated `dist/` directory or install-time build.
 
 ```sh
 pnpm add github:rozsazoltan/opencode-sherpa#<tag-or-commit>
@@ -128,10 +128,9 @@ Sherpa validates source resolution and plans project writes before applying them
 bun install --frozen-lockfile
 bun test
 bun run typecheck
-bun run build
 ```
 
-`dist/` is committed for pnpm Git installs; run `bun run build` after changing `src/`.
+The CLI runs directly from `src/cli.ts`. Its Node shebang requires Node.js 22.18 or newer when invoked through pnpm; Bun can also run the TypeScript entrypoint directly.
 
 ## License
 

@@ -4,20 +4,19 @@
   "private": true,
   "type": "module",
   "bin": {
-    "sherpa": "./dist/cli.js"
+    "sherpa": "./src/cli.ts"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18.0"
   },
   "files": [
-    "dist/",
+    "src/",
     "tuning/",
     "LICENSE"
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "jsonc-parser": "3.3.1",

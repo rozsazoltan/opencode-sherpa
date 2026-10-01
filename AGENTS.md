@@ -7,7 +7,7 @@ OpenCode Sherpa is a TypeScript ESM CLI for explicitly syncing reusable OpenCode
 ## Repository layout
 
 - `src/` — CLI argument handling, project sync, tuning discovery, MCP config merge, and cached OMO-Slim agent sources.
-- `dist/` — committed Node-compatible CLI output used by pnpm Git installs.
+- `src/cli.ts` — directly executable TypeScript CLI entrypoint.
 - `tuning/` — packaged Markdown instructions, skills, and commands.
 - `test/` — Bun tests for CLI behavior and sync modules.
 - `README.md` — user installation, configuration, sync behavior, and limitations.
@@ -20,7 +20,6 @@ Use Bun to install dependencies and validate changes:
 bun install --frozen-lockfile
 bun test
 bun run typecheck
-bun run build
 ```
 
 ## Contributor guidance
