@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,11 @@ async function createProject(): Promise<string> {
 
 test("registers default Sherpa services and disposes them", async () => {
   const project = await createProject();
+  const configPath = path.join(project, ".opencode", "oh-my-opencode-slim.jsonc");
+  const promptPath = path.join(project, ".opencode", "oh-my-opencode-slim", "sherpa-stale.md");
+  mkdirSync(path.dirname(promptPath), { recursive: true });
+  writeFileSync(configPath, '{"agents":{"sherpa-stale":true},"presets":{"session":{"sherpa-stale":{"inheritModelFrom":"session"}}}}\n');
+  writeFileSync(promptPath, "Stale prompt.\n");
   const disposed: string[] = [];
   const servers = new Map<string, unknown>();
   let contextCallback: ((input: SessionContext) => void | Promise<void>) | undefined;
@@ -56,6 +62,8 @@ test("registers default Sherpa services and disposes them", async () => {
   try {
     const registered = await SherpaPlugin.setup(context);
     if (typeof registered === "function") cleanup = registered;
+    expect(readFileSync(configPath, "utf8")).not.toContain("sherpa-stale");
+    expect(() => readFileSync(promptPath, "utf8")).toThrow();
     expect(servers.has("github")).toBe(true);
     expect(servers.has("jina")).toBe(true);
     expect(servers.has("context7")).toBe(true);

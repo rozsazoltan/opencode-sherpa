@@ -10,7 +10,7 @@ import {
   resolveSherpaAgentSources,
 } from "../src/agent-sources.ts";
 import { DEFAULT_SHERPA_AGENT_SOURCES } from "../src/agent-source-catalog.ts";
-import { syncSherpaOmoAgents } from "../src/omo-agents.ts";
+import { reconcileSherpaOmoAgents } from "../src/omo-agents.ts";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
@@ -142,35 +142,48 @@ test("resolves recursive source prompts, strips Claude metadata, and reuses veri
   }
 });
 
-test("empty source list does not create cache or touch a config directory", async () => {
+test("empty source list resolves successfully without creating a cache", async () => {
   const root = fixture();
   try {
     expect(await resolveSherpaAgentSources([], { cacheDirectory: path.join(root.root, "cache") }))
       .toEqual({ agents: [], sources: [], diagnostics: [] });
     expect(() => readFileSync(path.join(root.root, "cache"))).toThrow();
-    expect(syncSherpaOmoAgents([], { configDirectory: path.join(root.root, "config") }).installed).toEqual([]);
-    expect(() => readFileSync(path.join(root.root, "config"))).toThrow();
+    expect(reconcileSherpaOmoAgents({ agents: [], sources: [], diagnostics: [] }, { projectDirectory: root.root }))
+      .toMatchObject({ skipped: false, removedAgents: [], installedAgents: [], removedPrompts: [] });
+    expect(() => readFileSync(path.join(root.root, ".opencode"))).toThrow();
   } finally {
     root.dispose();
   }
 });
 
-test("syncs global OMO config safely and idempotently while retaining existing presets", () => {
+test("rebuilds project-local Sherpa agents and preserves unrelated config and files", () => {
   const root = fixture();
   try {
-    const configDirectory = path.join(root.root, "config");
-    mkdirSync(configDirectory, { recursive: true });
-    const configPath = root.write("config/oh-my-opencode-slim.jsonc", [
+    const projectConfigDirectory = path.join(root.root, ".opencode");
+    const prompts = path.join(projectConfigDirectory, "oh-my-opencode-slim");
+    mkdirSync(prompts, { recursive: true });
+    const configPath = root.write(".opencode/oh-my-opencode-slim.jsonc", [
       "{",
-      "  // Keep this user comment.",
+      "  // Preserve comments and user configuration.",
       '  "theme": "dark",',
-      '  "agents": { "designer": { "model": "user/designer" } },',
-      '  "presets": { "codex": { "designer": { "model": "codex/designer" } } },',
+      '  "agents": { "designer": { "model": "user/designer" }, "sherpa-fixture-old": { "model": "old" }, "sherpa-fixture-obsolete": { "model": "stale" } },',
+      '  "presets": {',
+      '    "codex": { "designer": { "model": "codex/designer" }, "sherpa-fixture-old": { "model": "old" }, "sherpa-fixture-obsolete": { "model": "stale" } },',
+      '    "session": { "designer": { "inheritModelFrom": "session" }, "sherpa-fixture-old": { "inheritModelFrom": "session" }, "sherpa-fixture-obsolete": { "inheritModelFrom": "session" } },',
+      '    "custom": { "model": "custom/model", "sherpa-fixture-old": { "model": "old" }, "sherpa-fixture-obsolete": { "model": "stale" } }',
+      "  },",
       '  "mcp": { "existing": true },',
       '  "skills": ["user-skill"]',
       "}",
     ].join("\n"));
-    const originalCodex = config(configPath).presets.codex;
+    const oldPrompt = root.write(".opencode/oh-my-opencode-slim/sherpa-fixture-old.md", "User-modified stale prompt.\n");
+    const obsoletePrompt = root.write(".opencode/oh-my-opencode-slim/sherpa-fixture-obsolete.md", "Obsolete prompt.\n");
+    root.write(".opencode/oh-my-opencode-slim/other.md", "Unrelated prompt.\n");
+    root.write(".opencode/oh-my-opencode-slim/notes.json", "{\"keep\":true}\n");
+    root.write(".opencode/oh-my-opencode-slim/sherpa-folder/child.md", "Do not traverse prompt subdirectories.\n");
+    const sourceNoticePath = root.write(".opencode/oh-my-opencode-slim/sherpa-agent-sources.md", "Keep existing notice.\n");
+    const globalConfig = root.write("global/config/oh-my-opencode-slim.jsonc", '{"agents":{"sherpa-global":{"model":"global"}}}\n');
+    const globalPrompt = root.write("global/config/oh-my-opencode-slim/sherpa-global.md", "Global sentinel.\n");
     const sources = [{
       namespace: "fixture",
       repository: "example/agents",
@@ -180,14 +193,14 @@ test("syncs global OMO config safely and idempotently while retaining existing p
       licensePath: "LICENSE",
       licenseText: "MIT License\nAll rights reserved by upstream authors.",
     }];
-    const specialist = agent("sherpa-fixture-api-designer");
+    const specialist = agent("sherpa-fixture-old");
+    const resolution = { agents: [specialist], sources, diagnostics: [] };
 
-    const first = syncSherpaOmoAgents([specialist], { configDirectory, sources });
-    expect(first.installed).toEqual([specialist.id]);
-    expect(first.collisions).toEqual([]);
+    const first = reconcileSherpaOmoAgents(resolution, { projectDirectory: root.root });
+    expect(first).toMatchObject({ skipped: false, installedAgents: [specialist.id], removedPrompts: ["sherpa-fixture-obsolete.md"] });
     const updatedText = readFileSync(configPath, "utf8");
     const updated = config(configPath);
-    expect(updatedText).toContain("// Keep this user comment.");
+    expect(updatedText).toContain("// Preserve comments and user configuration.");
     expect(updated).toMatchObject({
       theme: "dark",
       mcp: { existing: true },
@@ -200,84 +213,102 @@ test("syncs global OMO config safely and idempotently while retaining existing p
         },
       },
       presets: {
-        codex: originalCodex,
+        codex: {
+          designer: { model: "codex/designer" },
+          [specialist.id]: { inheritModelFrom: "session" },
+        },
         session: {
           designer: { inheritModelFrom: "session" },
           [specialist.id]: { inheritModelFrom: "session" },
         },
+        custom: { "model": "custom/model" },
       },
     });
-    expect(updated.presets.codex[specialist.id]).toEqual({ inheritModelFrom: "session" });
-    expect(updated.presets.codex.designer).toEqual({ model: "codex/designer" });
-    expect(readFileSync(path.join(configDirectory, "oh-my-opencode-slim", `${specialist.id}.md`), "utf8"))
+    expect(updated.agents["sherpa-fixture-old"]).toEqual({
+      description: specialist.description,
+      orchestratorPrompt: specialist.orchestratorPrompt,
+    });
+    expect(updated.presets.codex["sherpa-fixture-old"]).toEqual({ inheritModelFrom: "session" });
+    expect(updated.presets.session["sherpa-fixture-old"]).toEqual({ inheritModelFrom: "session" });
+    expect(updated.agents["sherpa-fixture-obsolete"]).toBeUndefined();
+    expect(updated.presets.codex["sherpa-fixture-obsolete"]).toBeUndefined();
+    expect(updated.presets.session["sherpa-fixture-obsolete"]).toBeUndefined();
+    expect(updated.presets.custom["sherpa-fixture-old"]).toBeUndefined();
+    expect(readFileSync(path.join(prompts, `${specialist.id}.md`), "utf8"))
       .toBe(`${specialist.prompt}\n`);
-    expect(readFileSync(path.join(configDirectory, "oh-my-opencode-slim", "sherpa-agent-sources.md"), "utf8"))
-      .toContain("MIT License");
+    expect(readFileSync(oldPrompt, "utf8")).toBe(`${specialist.prompt}\n`);
+    expect(() => readFileSync(obsoletePrompt)).toThrow();
+    expect(readFileSync(sourceNoticePath, "utf8")).toBe("Keep existing notice.\n");
+    expect(readFileSync(path.join(prompts, "other.md"), "utf8")).toBe("Unrelated prompt.\n");
+    expect(readFileSync(path.join(prompts, "notes.json"), "utf8")).toBe('{"keep":true}\n');
+    expect(readFileSync(path.join(prompts, "sherpa-folder", "child.md"), "utf8"))
+      .toBe("Do not traverse prompt subdirectories.\n");
+    expect(readFileSync(globalConfig, "utf8")).toContain("sherpa-global");
+    expect(readFileSync(globalPrompt, "utf8")).toBe("Global sentinel.\n");
 
     const before = [
       updatedText,
-      readFileSync(path.join(configDirectory, "oh-my-opencode-slim", `${specialist.id}.md`), "utf8"),
-      readFileSync(path.join(configDirectory, "oh-my-opencode-slim", ".sherpa-agent-ownership.json"), "utf8"),
+      readFileSync(path.join(prompts, `${specialist.id}.md`), "utf8"),
+      readFileSync(sourceNoticePath, "utf8"),
     ];
-    expect(syncSherpaOmoAgents([specialist], { configDirectory, sources }).unchanged).toEqual([specialist.id]);
+    expect(reconcileSherpaOmoAgents(resolution, { projectDirectory: root.root }).skipped).toBe(false);
     expect([
       readFileSync(configPath, "utf8"),
-      readFileSync(path.join(configDirectory, "oh-my-opencode-slim", `${specialist.id}.md`), "utf8"),
-      readFileSync(path.join(configDirectory, "oh-my-opencode-slim", ".sherpa-agent-ownership.json"), "utf8"),
+      readFileSync(path.join(prompts, `${specialist.id}.md`), "utf8"),
+      readFileSync(sourceNoticePath, "utf8"),
     ]).toEqual(before);
   } finally {
     root.dispose();
   }
 });
 
-test("preserves conflicting user agent files and chooses existing JSON config", () => {
+test("removes stale Sherpa data when sources are intentionally empty", () => {
   const root = fixture();
   try {
-    const configDirectory = path.join(root.root, "config");
-    mkdirSync(configDirectory, { recursive: true });
-    const configPath = root.write("config/oh-my-opencode-slim.json", '{"agents":{"sherpa-fixture-reviewer":{"description":"User"}}}\n');
-    const prompts = path.join(configDirectory, "oh-my-opencode-slim");
-    mkdirSync(prompts, { recursive: true });
-    const promptPath = root.write("config/oh-my-opencode-slim/sherpa-fixture-reviewer.md", "User prompt.\n");
-    const result = syncSherpaOmoAgents([agent("sherpa-fixture-reviewer")], { configDirectory });
-    expect(result.collisions).toEqual([{ id: "sherpa-fixture-reviewer", reason: "unowned-artifact" }]);
-    expect(config(configPath).agents["sherpa-fixture-reviewer"].description).toBe("User");
-    expect(readFileSync(promptPath, "utf8")).toBe("User prompt.\n");
-    expect(config(configPath).presets.session["sherpa-fixture-reviewer"]).toBeUndefined();
-    expect(JSON.parse(readFileSync(path.join(prompts, ".sherpa-agent-ownership.json"), "utf8")))
-      .toEqual({ version: 2, agents: {} });
+    const configPath = root.write(".opencode/oh-my-opencode-slim.json", '{"agents":{"sherpa-fixture-reviewer":{"description":"User"},"reviewer":{"model":"keep"}},"presets":{"custom":{"sherpa-fixture-reviewer":{"model":"user"},"reviewer":{"model":"keep"}}}}\n');
+    const promptPath = root.write(".opencode/oh-my-opencode-slim/sherpa-fixture-reviewer.md", "User-modified prompt.\n");
+    const unrelated = root.write(".opencode/oh-my-opencode-slim/reviewer.md", "Keep.\n");
+    const empty = { agents: [], sources: [], diagnostics: [] };
+    const result = reconcileSherpaOmoAgents(empty, { projectDirectory: root.root });
+    expect(result).toMatchObject({ skipped: false, removedAgents: ["sherpa-fixture-reviewer"], removedPrompts: ["sherpa-fixture-reviewer.md"] });
+    expect(config(configPath)).toEqual({ agents: { reviewer: { model: "keep" } }, presets: { custom: { reviewer: { model: "keep" } } } });
+    expect(() => readFileSync(promptPath)).toThrow();
+    expect(readFileSync(unrelated, "utf8")).toBe("Keep.\n");
   } finally {
     root.dispose();
   }
 });
 
-test("does not claim an agent ID already mapped by the codex preset", () => {
+test("source fetch failure skips cleanup and preserves existing project agents", async () => {
   const root = fixture();
   try {
-    const configDirectory = path.join(root.root, "config");
-    const configPath = root.write("config/oh-my-opencode-slim.jsonc", JSON.stringify({
-      presets: { codex: { "sherpa-fixture-reviewer": { model: "user/reviewer" } } },
-    }, null, 2) + "\n");
-
-    const result = syncSherpaOmoAgents([agent("sherpa-fixture-reviewer")], { configDirectory });
-
-    expect(result.collisions).toEqual([{ id: "sherpa-fixture-reviewer", reason: "unowned-artifact" }]);
-    expect(config(configPath).presets.codex["sherpa-fixture-reviewer"])
-      .toEqual({ model: "user/reviewer" });
-    expect(config(configPath).presets.session["sherpa-fixture-reviewer"]).toBeUndefined();
-    expect(config(configPath).agents["sherpa-fixture-reviewer"]).toBeUndefined();
+    const configPath = root.write(".opencode/oh-my-opencode-slim.jsonc", '{"agents":{"sherpa-fixture-old":{"description":"old"}}}\n');
+    const promptPath = root.write(".opencode/oh-my-opencode-slim/sherpa-fixture-old.md", "Keep until source recovers.\n");
+    const before = [readFileSync(configPath, "utf8"), readFileSync(promptPath, "utf8")];
+    const resolution = await resolveSherpaAgentSources([{
+      namespace: "fixture",
+      repository: "example/agents",
+      commit: COMMIT,
+      directories: ["agents"],
+    }], {
+      cacheDirectory: path.join(root.root, "cache"),
+      fetchImpl: (async () => { throw new Error("Fetch failed."); }) as unknown as typeof fetch,
+    });
+    expect(resolution.diagnostics.map(({ code }) => code)).toEqual(["source-unavailable"]);
+    const result = reconcileSherpaOmoAgents(resolution, { projectDirectory: root.root });
+    expect(result).toMatchObject({ skipped: true, reason: "resolution-incomplete" });
+    expect([readFileSync(configPath, "utf8"), readFileSync(promptPath, "utf8")]).toEqual(before);
   } finally {
     root.dispose();
   }
 });
 
-test("refuses ambiguous OMO config files without changing either", () => {
+test("refuses ambiguous project-local config files without changing either", () => {
   const root = fixture();
   try {
-    const configDirectory = path.join(root.root, "config");
-    const jsonc = root.write("config/oh-my-opencode-slim.jsonc", "{}\n");
-    const json = root.write("config/oh-my-opencode-slim.json", "{}\n");
-    expect(() => syncSherpaOmoAgents([agent("sherpa-fixture-reviewer")], { configDirectory }))
+    const jsonc = root.write(".opencode/oh-my-opencode-slim.jsonc", "{}\n");
+    const json = root.write(".opencode/oh-my-opencode-slim.json", "{}\n");
+    expect(() => reconcileSherpaOmoAgents({ agents: [agent("sherpa-fixture-reviewer")], sources: [], diagnostics: [] }, { projectDirectory: root.root }))
       .toThrow("Multiple OMO-Slim config files exist");
     expect(readFileSync(jsonc, "utf8")).toBe("{}\n");
     expect(readFileSync(json, "utf8")).toBe("{}\n");
@@ -286,31 +317,45 @@ test("refuses ambiguous OMO config files without changing either", () => {
   }
 });
 
-test("updates a symlinked OMO config target without replacing the link", () => {
+test("refuses linked project config and prompt paths without touching targets", () => {
   const root = fixture();
   try {
-    const configDirectory = path.join(root.root, "config");
-    const externalConfig = root.write("linked-config/oh-my-opencode-slim.jsonc", [
-      "{",
-      "  // Keep the linked config comment.",
-      '  "agents": {},',
-      '  "presets": { "codex": {} }',
-      "}",
-      "",
-    ].join("\n"));
-    mkdirSync(configDirectory, { recursive: true });
-    const configLink = path.join(configDirectory, "oh-my-opencode-slim.jsonc");
+    const externalConfig = root.write("outside/oh-my-opencode-slim.jsonc", '{"agents":{"sherpa-outside":true}}\n');
+    const configLink = path.join(root.root, ".opencode", "oh-my-opencode-slim.jsonc");
+    mkdirSync(path.dirname(configLink), { recursive: true });
     symlinkSync(externalConfig, configLink);
+    expect(() => reconcileSherpaOmoAgents({ agents: [agent("sherpa-fixture-reviewer")], sources: [], diagnostics: [] }, { projectDirectory: root.root }))
+      .toThrow("Symlink path component is not allowed");
+    expect(readFileSync(externalConfig, "utf8")).toBe('{"agents":{"sherpa-outside":true}}\n');
 
-    const specialist = agent("sherpa-fixture-linked-reviewer");
-    const result = syncSherpaOmoAgents([specialist], { configDirectory });
+    rmSync(configLink);
+    const outsidePrompts = path.join(root.root, "outside-prompts");
+    mkdirSync(outsidePrompts);
+    const outsidePrompt = root.write("outside-prompts/sherpa-outside.md", "Do not touch.\n");
+    const promptLink = path.join(root.root, ".opencode", "oh-my-opencode-slim");
+    symlinkSync(outsidePrompts, promptLink);
+    expect(() => reconcileSherpaOmoAgents({ agents: [agent("sherpa-fixture-reviewer")], sources: [], diagnostics: [] }, { projectDirectory: root.root }))
+      .toThrow("Symlink path component is not allowed");
+    expect(readFileSync(outsidePrompt, "utf8")).toBe("Do not touch.\n");
+  } finally {
+    root.dispose();
+  }
+});
 
-    expect(result.installed).toEqual([specialist.id]);
-    expect(lstatSync(configLink).isSymbolicLink()).toBe(true);
-    expect(readFileSync(configLink, "utf8")).toContain("Keep the linked config comment.");
-    expect(config(externalConfig).agents[specialist.id].description).toBe(specialist.description);
-    expect(readFileSync(path.join(configDirectory, "oh-my-opencode-slim", `${specialist.id}.md`), "utf8"))
-      .toBe(`${specialist.prompt}\n`);
+test("refuses linked Sherpa prompt files before changing config", () => {
+  const root = fixture();
+  try {
+    const configPath = root.write(".opencode/oh-my-opencode-slim.jsonc", '{"agents":{"sherpa-fixture-old":true}}\n');
+    const outsidePrompt = root.write("outside.md", "Outside sentinel.\n");
+    const promptLink = path.join(root.root, ".opencode", "oh-my-opencode-slim", "sherpa-linked.md");
+    mkdirSync(path.dirname(promptLink), { recursive: true });
+    symlinkSync(outsidePrompt, promptLink);
+    const originalConfig = readFileSync(configPath, "utf8");
+    expect(() => reconcileSherpaOmoAgents({ agents: [agent("sherpa-fixture-new")], sources: [], diagnostics: [] }, { projectDirectory: root.root }))
+      .toThrow("Symlink path component is not allowed");
+    expect(readFileSync(configPath, "utf8")).toBe(originalConfig);
+    expect(readFileSync(outsidePrompt, "utf8")).toBe("Outside sentinel.\n");
+    expect(lstatSync(promptLink).isSymbolicLink()).toBe(true);
   } finally {
     root.dispose();
   }

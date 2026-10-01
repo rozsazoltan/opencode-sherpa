@@ -4,7 +4,7 @@ import type { Registration } from "@opencode/plugin/promise/registration";
 import { createEngineeringInstructions } from "./instructions.ts";
 import { registerRemoteMcpServers } from "./mcp.ts";
 import { configuredSherpaAgentSources, resolveSherpaAgentSources } from "./agent-sources.ts";
-import { syncSherpaOmoAgents } from "./omo-agents.ts";
+import { reconcileSherpaOmoAgents } from "./omo-agents.ts";
 import { createDirectoryPermissionEvaluator } from "./permissions.ts";
 import { loadSherpaTuning, registerSherpaCommands, registerSherpaSkills } from "./tuning.ts";
 
@@ -44,12 +44,11 @@ export const SherpaPlugin = Plugin.define({
           console.warn(`OpenCode Sherpa: agent source ${diagnostic.namespace}: ${diagnostic.message}`);
         }
       }
-      const agentSync = agentResolution.agents.length > 0
-        ? syncSherpaOmoAgents(agentResolution.agents, { sources: agentResolution.sources })
-        : undefined;
-      if (agentSync && agentSync.diagnostics.length > 0) {
-        const ids = agentSync.collisions.map(({ id }) => id).join(", ");
-        console.warn(`OpenCode Sherpa: skipped conflicting OMO-Slim agent files: ${ids}.`);
+      const agentSync = reconcileSherpaOmoAgents(agentResolution, {
+        projectDirectory: ctx.location.project.directory,
+      });
+      if (agentSync.skipped) {
+        console.warn("OpenCode Sherpa: skipped project-local OMO-Slim reconciliation because agent source resolution was incomplete.");
       }
       registrations.push(await ctx.session.hook("context", ({ system }) => {
         const text = [createEngineeringInstructions(ctx.options?.language), ...tuning.instructions]

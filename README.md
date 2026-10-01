@@ -7,7 +7,7 @@
 - Injects Sherpa's own engineering and conversation-language guidance through OpenCode's session context hook, without writing or managing a global `AGENTS.md`. Set `options.language` to a language such as `hu`; without a valid value, the plugin does not force a conversation language.
 - Handles OpenCode V2's separate `external_directory`, `read`, and `edit` actions. A matching `ask` may be allowed for paths under the default allowed root, `path.join(os.tmpdir(), "opencode")`, or an added `allowDirectories` root. `denyDirectories` takes priority over allowed roots: a matching request is denied even if its previous effect was `allow` when this hook runs. An explicit configured deny is never overridden.
 - Registers remote MCP servers `github` (`https://api.githubcopilot.com/mcp/`), `jina` (`https://mcp.jina.ai/v1`), `context7` (`https://mcp.context7.com/mcp`), and `gh_grep` (`https://mcp.grep.app`) only when their names are not already configured, preserving existing entries.
-- Resolves and caches agent prompt sources from pinned Git repositories, then synchronizes discovered agents into OMO-Slim's user-level config and prompt directory. Sherpa preserves unrelated settings and user-owned files; it never changes the main OpenCode config or installs OMO-Slim.
+- Resolves agent prompts from pinned Git repositories into a shared cache, then reconciles discovered agents in the current project's OMO-Slim config and prompt directory. Sherpa preserves unrelated project entries and files; it never changes global OMO-Slim files or the main OpenCode config, and it does not install OMO-Slim.
 
 ## Bundled tuning content
 
@@ -54,7 +54,7 @@ tuning/
 
 Sherpa resolves agent prompts from pinned GitHub repositories at startup. The default source is [VoltAgent's subagent repository](https://github.com/VoltAgent/awesome-claude-code-subagents), pinned to an immutable commit. Sherpa recursively scans core-development, language-specialist, quality/security, developer-experience, and business/product categories, plus only `api-documenter.md` from specialized domains. README files are skipped. Agent IDs use the source namespace and prompt filename, such as `sherpa-voltagent-javascript-pro`; parent-directory context is added only when filenames collide. No per-agent registry is required.
 
-Use `agentSources` to add repositories and roots or replace defaults. Each source descriptor requires a repository, full commit SHA, namespace, and selected directories. Set `includeDefaults: false` to use only custom sources, or pass an empty array to disable agent sync.
+Use `agentSources` to add repositories and roots or replace defaults. Each source descriptor requires a repository, full commit SHA, namespace, and selected directories. Set `includeDefaults: false` to use only custom sources, or pass an empty array to remove project-local Sherpa agents at startup.
 
 ```jsonc
 {
@@ -72,11 +72,13 @@ Use `agentSources` to add repositories and roots or replace defaults. Each sourc
 }
 ```
 
-Sherpa caches each immutable repository under `~/.cache/opencode/.sherpa/agent-sources/` (or `$XDG_CACHE_HOME/opencode/.sherpa/agent-sources/`) and reuses verified content offline. It downloads GitHub source archives, not mutable branches. Prompt YAML frontmatter may provide `description` and `orchestratorPrompt`; Claude-specific `tools` and `model` fields are ignored. Source license text is copied to the OMO-Slim prompt directory with commit and archive-hash provenance. Review third-party source content before enabling it.
+Sherpa caches each immutable repository under `~/.cache/opencode/.sherpa/agent-sources/` (or `$XDG_CACHE_HOME/opencode/.sherpa/agent-sources/`) and reuses verified content offline. It downloads GitHub source archives, not mutable branches. Prompt YAML frontmatter may provide `description` and `orchestratorPrompt`; Claude-specific `tools` and `model` fields are ignored. On first successful resolution, source license text is recorded in the project-local OMO-Slim prompt directory with commit and archive-hash provenance; an existing notice file is preserved. Review third-party source content before enabling it.
 
-OMO-Slim must be installed and configured. Sherpa writes discovered prompt files and owned entries to its user-level `oh-my-opencode-slim/` and `oh-my-opencode-slim.jsonc` files. It preserves unrelated JSONC, built-in agents, user model mappings, modified Sherpa files, and conflicting IDs. New Sherpa agents inherit the active session model in both `codex` and `session` presets; existing `codex` model mappings are preserved. The `session` preset adds per-agent inheritance for known agents where no mapping exists. OMO-Slim uses descriptions and `orchestratorPrompt` for semantic routing; reload OpenCode/OMO-Slim after sync.
+OMO-Slim must be installed and configured. At each plugin startup, Sherpa reconciles the current project in `.opencode/oh-my-opencode-slim.jsonc` and `.opencode/oh-my-opencode-slim/`; if only `.json` exists, Sherpa uses that file. New agents inherit the active session model in `codex` and `session` presets. OMO-Slim uses descriptions and `orchestratorPrompt` for semantic routing; reload OpenCode/OMO-Slim after startup.
 
-This changes global OMO-Slim behavior across projects. Sherpa never changes the main OpenCode config. Only unchanged Sherpa-owned entries/files may be refreshed; conflicts are skipped and reported. Sherpa does not remove synced agents automatically when the plugin is removed; review and delete its unchanged owned entries/files manually if no longer wanted.
+Sherpa-managed namespace is destructive by design: startup removes every project-local root `agents` key and every preset agent key that starts with `sherpa`, then regenerates agents resolved from configured sources. It also removes top-level `sherpa*.md` agent prompt files before writing current prompts. This includes user-modified entries and prompts. Keep user-managed agents and prompts outside this prefix. Sherpa preserves other config entries, JSONC comments, presets, models, and prompt-directory files. It never reads or writes global OMO-Slim config/prompts. Any source-resolution diagnostic, including a failed fetch, skips reconciliation and retains last working agents; an intentionally empty `agentSources` list has no diagnostics and removes all project-local Sherpa-managed agents and prompts. Symlinked config/prompt paths fail safely. Removing the plugin does not clean project files automatically.
+
+Project detection and project-specific skill selection are not implemented yet. Skills remain the bundled definitions in `tuning/skills/`.
 
 The tuning loader reads the packaged Sherpa tree, ignores symbolic links within it, and rejects a symbolic `tuning/` root. It reports invalid skill/command frontmatter during plugin setup instead of silently skipping those definitions. Content files sort by relative path, and Sherpa registers commands in that order. Duplicate names derived from bundled command files fail during loading. Collisions with existing OpenCode commands follow transform registration order; the command editor has no collision lookup, so a registration may replace an existing command. Content changes take effect after the plugin is reloaded; with a Git-installed package, update the package first. Sherpa does not manage global `AGENTS.md`.
 
@@ -110,7 +112,7 @@ Add the following entry to your per-machine global OpenCode `opencode.jsonc` con
 
 This Git package selector is an initial configuration example and has not yet been runtime-verified; confirm support with your OpenCode version before relying on it. The first startup needs network access to resolve uncached Git sources; later startups can reuse verified cache entries.
 
-Restart OpenCode after updating the Sherpa plugin package to load the new version. To remove Sherpa, remove its plugin entry and restart OpenCode. Sherpa does not automatically delete its OMO-Slim agent entries or prompt files when removed; review and remove unchanged Sherpa-owned entries and files manually if no longer wanted.
+Restart OpenCode after updating the Sherpa plugin package to load the new version. To remove Sherpa, remove its plugin entry and restart OpenCode. Sherpa leaves project-local OMO-Slim entries and prompts in place when the plugin is removed; remove them manually if no longer wanted.
 
 To opt into local GitHub token-file authentication instead of the default host-managed OAuth, add this to the Sherpa entry's `options` object:
 
