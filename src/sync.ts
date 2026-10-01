@@ -15,6 +15,8 @@ import { configuredSherpaAgentSources, resolveSherpaAgentSources, type SherpaAge
 import { createEngineeringInstructions } from "./instructions.ts";
 import { createRemoteMcpServers } from "./mcp.ts";
 import { reconcileSherpaOmoAgents } from "./omo-agents.ts";
+import { configuredProjectDetection, detectProject } from "./project-detection.ts";
+import { configuredContentSelection, selectProjectContent } from "./project-selection.ts";
 import { loadSherpaTuning, type SherpaTuning } from "./tuning.ts";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,6 +49,9 @@ interface ProjectSettings {
   readonly agentSources?: unknown;
   readonly mcp?: unknown;
   readonly language?: unknown;
+  readonly detection?: unknown;
+  readonly agents?: unknown;
+  readonly skills?: unknown;
 }
 
 export interface SyncOptions {
@@ -87,7 +92,8 @@ function loadProjectSettings(projectDirectory: string): ProjectSettings {
   const source = readTextFile(configPath);
   if (source === undefined) return {};
   const parsed = parseJsoncObject(source, `OpenCode Sherpa config ${configPath}`);
-  const unsupported = Object.keys(parsed).find((key) => !["agentSources", "mcp", "language"].includes(key));
+  const unsupported = Object.keys(parsed).find((key) =>
+    !["agentSources", "mcp", "language", "detection", "agents", "skills"].includes(key));
   if (unsupported) throw new Error(`Unsupported OpenCode Sherpa config option: ${unsupported}.`);
   return parsed;
 }
@@ -355,6 +361,32 @@ function printActions(
   return messages;
 }
 
+function printSelection(
+  detection: ReturnType<typeof detectProject>,
+  selection: ReturnType<typeof selectProjectContent>,
+): string[] {
+  const messages = [
+    `Detected stacks: ${detection.stacks.length > 0 ? detection.stacks.join(", ") : "none"}`,
+    `Detected features: ${detection.features.length > 0 ? detection.features.join(", ") : "none"}`,
+  ];
+  if (detection.evidence.length === 0) {
+    messages.push("Manifest evidence: none");
+  } else {
+    for (const evidence of detection.evidence) {
+      messages.push(`Manifest evidence ${evidence.path}: ${evidence.stack}; features: ${evidence.features.length > 0 ? evidence.features.join(", ") : "none"}`);
+    }
+  }
+  messages.push(selection.agents.length > 0 ? "Selected agents:" : "Selected agents: none");
+  for (const reason of selection.reasons.filter(({ kind }) => kind === "agent")) {
+    messages.push(`- ${reason.id}: ${reason.reason}`);
+  }
+  messages.push(selection.skills.length > 0 ? "Selected skills:" : "Selected skills: none");
+  for (const reason of selection.reasons.filter(({ kind }) => kind === "skill")) {
+    messages.push(`- ${reason.id}: ${reason.reason}`);
+  }
+  return messages;
+}
+
 export async function syncProject(
   options: SyncOptions,
   dependencies: SyncDependencies = {},
@@ -364,6 +396,10 @@ export async function syncProject(
   if (!projectStat?.isDirectory()) throw new Error(`OpenCode project path is not a directory: ${projectDirectory}`);
   const settings = loadProjectSettings(projectDirectory);
   const sources = configuredSherpaAgentSources(settings.agentSources);
+  const detectionOptions = configuredProjectDetection(settings.detection === undefined ? {} : settings.detection);
+  const agentSelection = configuredContentSelection(settings.agents);
+  const skillSelection = configuredContentSelection(settings.skills);
+  const detection = detectProject(projectDirectory, detectionOptions);
   const dryRun = options.dryRun === true;
   const resolver = dependencies.resolveSources ?? resolveSherpaAgentSources;
   let temporaryCache: string | undefined;
@@ -387,15 +423,24 @@ export async function syncProject(
   }
 
   const tuning = loadSherpaTuning(options.packageRoot ?? dependencies.packageRoot ?? PACKAGE_ROOT);
-  const artifactPlan = planArtifacts(projectDirectory, tuning, settings.language);
+  const selection = selectProjectContent(detection, resolution.agents, tuning, {
+    agents: agentSelection,
+    skills: skillSelection,
+  });
+  const filteredResolution: SherpaAgentResolution = { ...resolution, agents: selection.agents };
+  const filteredTuning: SherpaTuning = { ...tuning, skills: selection.skills };
+  const artifactPlan = planArtifacts(projectDirectory, filteredTuning, settings.language);
   const mcpWrite = planMcpConfig(projectDirectory, settings.mcp);
-  const omoResult = reconcileSherpaOmoAgents(resolution, { projectDirectory, dryRun: true });
-  const messages = printActions(projectDirectory, artifactPlan, mcpWrite, omoResult.changedPaths, dryRun);
+  const omoResult = reconcileSherpaOmoAgents(filteredResolution, { projectDirectory, dryRun: true });
+  const messages = [
+    ...printSelection(detection, selection),
+    ...printActions(projectDirectory, artifactPlan, mcpWrite, omoResult.changedPaths, dryRun),
+  ];
 
   if (!dryRun) {
     applyArtifactPlan(artifactPlan);
     if (mcpWrite) applyConfigWrite(mcpWrite);
-    reconcileSherpaOmoAgents(resolution, { projectDirectory });
+    reconcileSherpaOmoAgents(filteredResolution, { projectDirectory });
     return {
       messages: messages.map((message) => message.startsWith("Will write ")
         ? message.replace(/^Will write /u, "Wrote ")

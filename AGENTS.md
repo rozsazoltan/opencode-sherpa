@@ -6,8 +6,9 @@ OpenCode Sherpa is a TypeScript ESM CLI for explicitly syncing reusable OpenCode
 
 ## Repository layout
 
-- `src/` — CLI argument handling, project sync, tuning discovery, MCP config merge, and cached OMO-Slim agent sources.
-- `src/cli.ts` — directly executable TypeScript CLI entrypoint.
+- `src/` — CLI argument handling, bounded project detection, content selection/catalog, project sync, tuning discovery, MCP config merge, and cached OMO-Slim agent sources.
+- `src/cli.ts` — TypeScript CLI implementation and direct-source entrypoint.
+- `bin/sherpa.js` — installed CLI launcher for the packaged TypeScript source.
 - `tuning/` — packaged Markdown instructions, skills, and commands.
 - `test/` — Bun tests for CLI behavior and sync modules.
 - `README.md` — user installation, configuration, sync behavior, and limitations.
@@ -28,5 +29,6 @@ bun run typecheck
 - Preserve unrelated JSONC settings, MCP entries, user-owned files, and edits. Keep generated-file ownership checks and dry-run non-mutating.
 - Resolve pinned agent sources into the safe shared cache; reject unsafe archives, paths, and symlinks.
 - Keep tuning discovery deterministic and validated. Update tests when changing supported Markdown/frontmatter behavior.
+- Bound project detection to manifests, workspace declarations, and explicit/shallow project paths. Preserve exclusions and never scan dependency/generated trees or follow symlinks. Keep optional content off unless explicitly selected.
 - The old runtime permission hook is intentionally removed; do not add plugin lifecycle or permission interception back to the CLI.
 - Update `README.md` when user-facing behavior or configuration changes. Keep this guide focused on contributor instructions; avoid duplicating README details.
