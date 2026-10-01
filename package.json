@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "opencode-sherpa": "./dist/cli.js"
+    "sherpa": "./dist/cli.js"
   },
   "engines": {
     "node": ">=20"

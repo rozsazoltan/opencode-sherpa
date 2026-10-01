@@ -2,7 +2,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { syncProject } from "./sync.js";
-const USAGE = "Usage: opencode-sherpa sync [--project <path>] [--dry-run]";
+const USAGE = "Usage: sherpa sync [--project <path>] [--dry-run]";
 export function parseCliArgs(args, cwd = process.cwd()) {
     if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
         if (args.length > 1)

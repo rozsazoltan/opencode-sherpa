@@ -15,7 +15,7 @@ export interface CliIO {
   readonly stderr?: (line: string) => void;
 }
 
-const USAGE = "Usage: opencode-sherpa sync [--project <path>] [--dry-run]";
+const USAGE = "Usage: sherpa sync [--project <path>] [--dry-run]";
 
 export function parseCliArgs(args: readonly string[], cwd = process.cwd()): CliArgs {
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {

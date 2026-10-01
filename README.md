@@ -12,7 +12,7 @@ Sherpa is installed from GitHub and is not published to the npm registry. Its No
 
 ```sh
 pnpm add github:rozsazoltan/opencode-sherpa#<tag-or-commit>
-pnpm exec opencode-sherpa sync
+pnpm exec sherpa sync
 ```
 
 Use a release tag when available, or a commit SHA for a fixed revision. Installing the package does not modify the project; `sync` performs the changes explicitly.
@@ -20,7 +20,7 @@ Use a release tag when available, or a commit SHA for a fixed revision. Installi
 ## Commands
 
 ```text
-opencode-sherpa sync [--project <path>] [--dry-run]
+sherpa sync [--project <path>] [--dry-run]
 ```
 
 The project defaults to the current directory. `--project` accepts an absolute or current-directory-relative path. `--dry-run` prints planned changes without writing project files; it may resolve sources over the network, using a temporary cache.
