@@ -51,6 +51,8 @@ interface ProjectSettings {
   readonly language?: unknown;
   readonly detection?: unknown;
   readonly agents?: unknown;
+  readonly commands?: unknown;
+  readonly instructions?: unknown;
   readonly skills?: unknown;
 }
 
@@ -93,7 +95,7 @@ function loadProjectSettings(projectDirectory: string): ProjectSettings {
   if (source === undefined) return {};
   const parsed = parseJsoncObject(source, `OpenCode Sherpa config ${configPath}`);
   const unsupported = Object.keys(parsed).find((key) =>
-    !["agentSources", "mcp", "language", "detection", "agents", "skills"].includes(key));
+    !["agentSources", "mcp", "language", "detection", "agents", "commands", "instructions", "skills"].includes(key));
   if (unsupported) throw new Error(`Unsupported OpenCode Sherpa config option: ${unsupported}.`);
   return parsed;
 }
@@ -139,7 +141,7 @@ function planMcpConfig(projectDirectory: string, options: unknown): PlannedFileW
 }
 
 function instructionsContent(tuning: SherpaTuning, language: unknown): string {
-  const text = [createEngineeringInstructions(language), ...tuning.instructions]
+  const text = [createEngineeringInstructions(language), ...tuning.instructions.map(({ content }) => content.trim())]
     .filter((instruction) => instruction.length > 0)
     .join("\n\n");
   return `${INSTRUCTIONS_BEGIN}\n${text}\n${INSTRUCTIONS_END}`;
@@ -384,6 +386,14 @@ function printSelection(
   for (const reason of selection.reasons.filter(({ kind }) => kind === "skill")) {
     messages.push(`- ${reason.id}: ${reason.reason}`);
   }
+  messages.push(selection.commands.length > 0 ? "Selected commands:" : "Selected commands: none");
+  for (const reason of selection.reasons.filter(({ kind }) => kind === "command")) {
+    messages.push(`- ${reason.id}: ${reason.reason}`);
+  }
+  messages.push(selection.instructions.length > 0 ? "Selected instructions:" : "Selected instructions: none");
+  for (const reason of selection.reasons.filter(({ kind }) => kind === "instruction")) {
+    messages.push(`- ${reason.id}: ${reason.reason}`);
+  }
   return messages;
 }
 
@@ -398,6 +408,8 @@ export async function syncProject(
   const sources = configuredSherpaAgentSources(settings.agentSources);
   const detectionOptions = configuredProjectDetection(settings.detection === undefined ? {} : settings.detection);
   const agentSelection = configuredContentSelection(settings.agents);
+  const commandSelection = configuredContentSelection(settings.commands);
+  const instructionSelection = configuredContentSelection(settings.instructions);
   const skillSelection = configuredContentSelection(settings.skills);
   const detection = detectProject(projectDirectory, detectionOptions);
   const dryRun = options.dryRun === true;
@@ -425,10 +437,17 @@ export async function syncProject(
   const tuning = loadSherpaTuning(options.packageRoot ?? dependencies.packageRoot ?? PACKAGE_ROOT);
   const selection = selectProjectContent(detection, resolution.agents, tuning, {
     agents: agentSelection,
+    commands: commandSelection,
+    instructions: instructionSelection,
     skills: skillSelection,
   });
   const filteredResolution: SherpaAgentResolution = { ...resolution, agents: selection.agents };
-  const filteredTuning: SherpaTuning = { ...tuning, skills: selection.skills };
+  const filteredTuning: SherpaTuning = {
+    ...tuning,
+    commands: selection.commands,
+    instructions: selection.instructions,
+    skills: selection.skills,
+  };
   const artifactPlan = planArtifacts(projectDirectory, filteredTuning, settings.language);
   const mcpWrite = planMcpConfig(projectDirectory, settings.mcp);
   const omoResult = reconcileSherpaOmoAgents(filteredResolution, { projectDirectory, dryRun: true });

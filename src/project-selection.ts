@@ -1,6 +1,13 @@
 import type { SherpaOmoAgent } from "./agent-sources.ts";
-import { PROJECT_AGENT_CATALOG, PROJECT_SKILL_CATALOG, type ProjectContentRule, type ProjectStack } from "./project-catalog.ts";
-import type { PackagedSkill, SherpaTuning } from "./tuning.ts";
+import {
+  PROJECT_AGENT_CATALOG,
+  PROJECT_COMMAND_CATALOG,
+  PROJECT_INSTRUCTION_CATALOG,
+  PROJECT_SKILL_CATALOG,
+  type ProjectContentRule,
+  type ProjectStack,
+} from "./project-catalog.ts";
+import type { PackagedCommand, PackagedInstruction, PackagedSkill, SherpaTuning } from "./tuning.ts";
 
 export interface ConfiguredContentSelection {
   readonly auto: boolean;
@@ -14,25 +21,29 @@ export interface ProjectDetection {
 }
 
 export interface ProjectContentReason {
-  readonly kind: "agent" | "skill";
+  readonly kind: "agent" | "command" | "instruction" | "skill";
   readonly id: string;
   readonly reason: string;
 }
 
 export interface ProjectContentSelection {
   readonly agents: SherpaOmoAgent[];
+  readonly commands: PackagedCommand[];
+  readonly instructions: PackagedInstruction[];
   readonly skills: PackagedSkill[];
   readonly reasons: ProjectContentReason[];
 }
 
 export interface ProjectContentSelectionOptions {
   readonly agents?: unknown;
+  readonly commands?: unknown;
+  readonly instructions?: unknown;
   readonly skills?: unknown;
 }
 
 const CONTENT_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/u;
 const CONFIG_KEYS = new Set(["auto", "include", "exclude"]);
-const OPTION_KEYS = new Set(["agents", "skills"]);
+const OPTION_KEYS = new Set(["agents", "commands", "instructions", "skills"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -89,6 +100,7 @@ function basename(sourcePath: string): string {
 }
 
 function matchingReasons(rule: ProjectContentRule, detection: ProjectDetection): string[] {
+  if (rule.always) return ["Common project guidance."];
   const stacks = new Set(detection.stacks);
   const features = new Set(detection.features);
   const reasons: string[] = [];
@@ -101,13 +113,15 @@ function matchingReasons(rule: ProjectContentRule, detection: ProjectDetection):
   return reasons;
 }
 
-function validateKnownIds(kind: "agent" | "skill", ids: readonly string[], known: ReadonlySet<string>): void {
+type ContentKind = ProjectContentReason["kind"];
+
+function validateKnownIds(kind: ContentKind, ids: readonly string[], known: ReadonlySet<string>): void {
   for (const id of ids) {
     if (!known.has(id)) throw new TypeError(`Unknown ${kind} ID '${id}' in content selection.`);
   }
 }
 
-function assertUniqueIds(kind: "agent" | "skill", ids: readonly string[]): void {
+function assertUniqueIds(kind: ContentKind, ids: readonly string[]): void {
   const seen = new Set<string>();
   for (const id of ids) {
     if (seen.has(id)) throw new TypeError(`Duplicate ${kind} ID '${id}' was discovered.`);
@@ -115,13 +129,14 @@ function assertUniqueIds(kind: "agent" | "skill", ids: readonly string[]): void 
   }
 }
 
-function selectItems<T extends { readonly id: string }>(
-  kind: "agent" | "skill",
+function selectItems<T>(
+  kind: ContentKind,
   items: readonly T[],
+  idOf: (item: T) => string,
   configuration: ConfiguredContentSelection,
   matching: (item: T) => string[],
 ): { items: T[]; reasons: ProjectContentReason[] } {
-  const ids = items.map(({ id }) => id);
+  const ids = items.map(idOf);
   assertUniqueIds(kind, ids);
   const available = new Set(ids);
   validateKnownIds(kind, configuration.include, available);
@@ -132,14 +147,15 @@ function selectItems<T extends { readonly id: string }>(
   const selected: T[] = [];
   const reasons: ProjectContentReason[] = [];
   for (const item of items) {
-    if (excluded.has(item.id)) continue;
+    const id = idOf(item);
+    if (excluded.has(id)) continue;
     const matches = configuration.auto ? matching(item) : [];
-    const explicitlyIncluded = included.has(item.id);
+    const explicitlyIncluded = included.has(id);
     if (matches.length === 0 && !explicitlyIncluded) continue;
     selected.push(item);
     reasons.push({
       kind,
-      id: item.id,
+      id,
       reason: [
         ...matches,
         ...(explicitlyIncluded ? ["Explicitly included."] : []),
@@ -157,6 +173,8 @@ export function selectProjectContent(
 ): ProjectContentSelection {
   const configured = validateOptions(options);
   const agentSelection = configuredContentSelection(configured.agents);
+  const commandSelection = configuredContentSelection(configured.commands);
+  const instructionSelection = configuredContentSelection(configured.instructions);
   const skillSelection = configuredContentSelection(configured.skills);
   const agentRules = new Map<string, ProjectContentRule>(
     PROJECT_AGENT_CATALOG.map((rule) => [rule.id, rule] as const),
@@ -164,20 +182,41 @@ export function selectProjectContent(
   const skillRules = new Map<string, ProjectContentRule>(
     PROJECT_SKILL_CATALOG.map((rule) => [rule.id, rule] as const),
   );
+  const commandRules = new Map<string, ProjectContentRule>(
+    PROJECT_COMMAND_CATALOG.map((rule) => [rule.id, rule] as const),
+  );
+  const instructionRules = new Map<string, ProjectContentRule>(
+    PROJECT_INSTRUCTION_CATALOG.map((rule) => [rule.id, rule] as const),
+  );
 
-  const selectedAgents = selectItems("agent", agents, agentSelection, (agent) => {
+  const selectedAgents = selectItems("agent", agents, ({ id }) => id, agentSelection, (agent) => {
     const rule = agentRules.get(basename(agent.sourcePath));
     return rule ? matchingReasons(rule, detection) : [];
   });
-  const selectedSkills = selectItems("skill", tuning.skills, skillSelection, (skill) => {
+  const selectedCommands = selectItems("command", tuning.commands, ({ name }) => name, commandSelection, (command) => {
+    const rule = commandRules.get(command.name);
+    return rule ? matchingReasons(rule, detection) : [];
+  });
+  const selectedInstructions = selectItems("instruction", tuning.instructions, ({ id }) => id, instructionSelection, (instruction) => {
+    const rule = instructionRules.get(instruction.id);
+    return rule ? matchingReasons(rule, detection) : [];
+  });
+  const selectedSkills = selectItems("skill", tuning.skills, ({ id }) => id, skillSelection, (skill) => {
     const rule = skillRules.get(skill.id);
     return rule ? matchingReasons(rule, detection) : [];
   });
 
   return {
     agents: selectedAgents.items.sort((left, right) => lexicalCompare(left.id, right.id)),
+    commands: selectedCommands.items.sort((left, right) => lexicalCompare(left.name, right.name)),
+    instructions: selectedInstructions.items.sort((left, right) => lexicalCompare(left.id, right.id)),
     skills: selectedSkills.items.sort((left, right) => lexicalCompare(left.id, right.id)),
-    reasons: [...selectedAgents.reasons, ...selectedSkills.reasons].sort((left, right) =>
+    reasons: [
+      ...selectedAgents.reasons,
+      ...selectedCommands.reasons,
+      ...selectedInstructions.reasons,
+      ...selectedSkills.reasons,
+    ].sort((left, right) =>
       lexicalCompare(left.kind, right.kind) || lexicalCompare(left.id, right.id) || lexicalCompare(left.reason, right.reason)),
   };
 }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { SherpaOmoAgent } from "../src/agent-sources.ts";
 import { configuredContentSelection, selectProjectContent } from "../src/project-selection.ts";
-import type { PackagedSkill, SherpaTuning } from "../src/tuning.ts";
+import type { PackagedCommand, PackagedInstruction, PackagedSkill, SherpaTuning } from "../src/tuning.ts";
 import { loadSherpaTuning } from "../src/tuning.ts";
 
 function agent(id: string, sourcePath: string): SherpaOmoAgent {
@@ -21,8 +21,20 @@ function skill(id: string): PackagedSkill {
   return { id, name: id, description: `Guidance for ${id}.`, path: `${id}/SKILL.md`, content: "Guidance." };
 }
 
-function tuning(skills: readonly PackagedSkill[]): SherpaTuning {
-  return { instructions: [], skills, commands: [] };
+function command(name: string): PackagedCommand {
+  return { name, template: `Run ${name}.`, path: `commands/${name}.md` };
+}
+
+function instruction(id: string): PackagedInstruction {
+  return { id, content: `Guidance for ${id}.`, path: `instructions/${id}.md` };
+}
+
+function tuning(
+  skills: readonly PackagedSkill[],
+  commands: readonly PackagedCommand[] = [],
+  instructions: readonly PackagedInstruction[] = [],
+): SherpaTuning {
+  return { instructions, skills, commands };
 }
 
 const curatedAgents = [
@@ -125,6 +137,86 @@ test("selection and reasons are stable regardless of discovery order", () => {
   expect(second).toEqual(first);
 });
 
+test("auto-selects only matching stack commands and instructions plus common guidance", () => {
+  const commands = [command("sherpa-write-pr"), command("sherpa-rust-check"), command("sherpa-js-check"),
+    command("sherpa-php-check"), command("sherpa-write-issue")];
+  const instructions = [instruction("30-rust-development"), instruction("00-sherpa-principles"),
+    instruction("20-php-development"), instruction("10-js-development")];
+  const stacks = ["js", "php", "rust"] as const;
+
+  for (const [stack, expectedCommand, expectedInstruction] of [
+    ["js", "sherpa-js-check", "10-js-development"],
+    ["php", "sherpa-php-check", "20-php-development"],
+    ["rust", "sherpa-rust-check", "30-rust-development"],
+  ] as const) {
+    const result = selectProjectContent(
+      { stacks: [stack], features: [] },
+      [],
+      tuning([], commands, instructions),
+    );
+    expect(result.commands.map(({ name }) => name)).toEqual([expectedCommand]);
+    expect(result.instructions.map(({ id }) => id)).toEqual(["00-sherpa-principles", expectedInstruction]);
+    expect(result.reasons.find(({ id }) => id === "00-sherpa-principles")?.reason).toBe("Common project guidance.");
+  }
+
+  const mixed = selectProjectContent(
+    { stacks, features: [] },
+    [],
+    tuning([], commands, instructions),
+  );
+  expect(mixed.commands.map(({ name }) => name)).toEqual(["sherpa-js-check", "sherpa-php-check", "sherpa-rust-check"]);
+  expect(mixed.instructions.map(({ id }) => id)).toEqual([
+    "00-sherpa-principles", "10-js-development", "20-php-development", "30-rust-development",
+  ]);
+});
+
+test("common guidance remains on empty projects, while auto-off allows manual selection only", () => {
+  const items = tuning([], [command("sherpa-js-check"), command("sherpa-write-issue")], [
+    instruction("00-sherpa-principles"), instruction("10-js-development"), instruction("55-extra-guidance"),
+  ]);
+  const empty = selectProjectContent({ stacks: [], features: [] }, [], items);
+  expect(empty.commands).toEqual([]);
+  expect(empty.instructions.map(({ id }) => id)).toEqual(["00-sherpa-principles"]);
+
+  const manual = selectProjectContent({ stacks: ["js"], features: [] }, [], items, {
+    commands: { auto: false, include: ["sherpa-write-issue"] },
+    instructions: { auto: false, include: ["55-extra-guidance"], exclude: ["00-sherpa-principles"] },
+  });
+  expect(manual.commands.map(({ name }) => name)).toEqual(["sherpa-write-issue"]);
+  expect(manual.instructions.map(({ id }) => id)).toEqual(["55-extra-guidance"]);
+  expect(manual.reasons.map(({ kind, id, reason }) => [kind, id, reason])).toEqual([
+    ["command", "sherpa-write-issue", "Explicitly included."],
+    ["instruction", "55-extra-guidance", "Explicitly included."],
+  ]);
+});
+
+test("applies excludes before explicit includes and validates command and instruction IDs", () => {
+  const items = tuning([], [command("sherpa-js-check"), command("sherpa-write-issue")], [
+    instruction("00-sherpa-principles"), instruction("55-extra-guidance"),
+  ]);
+  const excluded = selectProjectContent({ stacks: ["js"], features: [] }, [], items, {
+    commands: { include: ["sherpa-js-check"], exclude: ["sherpa-js-check"] },
+    instructions: { include: ["55-extra-guidance"], exclude: ["55-extra-guidance"] },
+  });
+  expect(excluded.commands).toEqual([]);
+  expect(excluded.instructions.map(({ id }) => id)).toEqual(["00-sherpa-principles"]);
+
+  expect(() => selectProjectContent({ stacks: [], features: [] }, [], items, {
+    commands: { include: ["missing-command"] },
+  })).toThrow("Unknown command ID");
+  expect(() => selectProjectContent({ stacks: [], features: [] }, [], items, {
+    instructions: { exclude: ["missing-instruction"] },
+  })).toThrow("Unknown instruction ID");
+  expect(() => selectProjectContent(
+    { stacks: [], features: [] }, [], tuning([], [command("same"), command("same")]),
+  )).toThrow("Duplicate command ID");
+  expect(() => selectProjectContent(
+    { stacks: [], features: [] }, [], tuning([], [], [instruction("same"), instruction("same")]),
+  )).toThrow("Duplicate instruction ID");
+  expect(() => selectProjectContent({ stacks: [], features: [] }, [], items, { instructions: { include: [], extra: true } }))
+    .toThrow("Unsupported content selection field 'extra'");
+});
+
 test("all authored Sherpa skills load with valid metadata and non-empty guidance", () => {
   const loaded = loadSherpaTuning();
   const authored = loaded.skills.filter(({ id }) => id.startsWith("sherpa-"));
@@ -140,4 +232,20 @@ test("all authored Sherpa skills load with valid metadata and non-empty guidance
   expect(authored.every(({ name, description, content }) => name.length > 0 && description.length > 0 && content.length > 0))
     .toBe(true);
   expect(authored.map(({ id, name }) => [id, name])).toEqual(authored.map(({ id }) => [id, id]));
+});
+
+test("shipped tuning assets load and auto-select only matching language material", () => {
+  const loaded = loadSherpaTuning();
+  expect(loaded.instructions.map(({ id }) => id)).toEqual([
+    "00-sherpa-principles", "10-js-development", "20-php-development", "30-rust-development",
+  ]);
+  expect(loaded.commands.map(({ name }) => name)).toEqual([
+    "sherpa-js-check", "sherpa-php-check", "sherpa-rust-check", "sherpa-write-issue", "sherpa-write-pr",
+  ]);
+  expect(loaded.instructions.every(({ content }) => content.trim().length > 0)).toBe(true);
+  expect(loaded.commands.every(({ template }) => template.trim().length > 0)).toBe(true);
+
+  const result = selectProjectContent({ stacks: ["js"], features: [] }, [], loaded);
+  expect(result.commands.map(({ name }) => name)).toEqual(["sherpa-js-check"]);
+  expect(result.instructions.map(({ id }) => id)).toEqual(["00-sherpa-principles", "10-js-development"]);
 });

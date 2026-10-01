@@ -33,7 +33,7 @@ Run `sync` again after changing Sherpa's package version, project configuration,
 
 ## Project configuration
 
-Create `opencode-sherpa.jsonc` in the repository root. A `.json` file is also accepted, but Sherpa refuses to choose if both exist. Supported settings are `detection`, `agents`, `skills`, `agentSources`, `mcp`, and `language`.
+Create `opencode-sherpa.jsonc` in the repository root. A `.json` file is also accepted, but Sherpa refuses to choose if both exist. Supported settings are `detection`, `agents`, `skills`, `commands`, `instructions`, `agentSources`, `mcp`, and `language`.
 
 ```jsonc
 {
@@ -46,6 +46,11 @@ Create `opencode-sherpa.jsonc` in the repository root. A `.json` file is also ac
   "skills": {
     "auto": true,
     "include": ["sherpa-issue-writing", "sherpa-pr-writing"],
+    "exclude": []
+  },
+  "commands": {
+    "auto": true,
+    "include": ["sherpa-write-issue", "sherpa-write-pr"],
     "exclude": []
   },
   "mcp": {
@@ -79,7 +84,24 @@ Automatic agents are curated roles matched against discovered source prompts: PH
 
 Automatic skills are original Sherpa coding playbooks: `sherpa-php-development`, `sherpa-js-development`, `sherpa-rust-development`, plus `sherpa-laravel-development` and `sherpa-vue-development` when those frameworks are detected. The issue/PR-writing skills are optional and never enabled automatically. These are bundled guidance, not copies of third-party skill collections or installs of the tools they describe.
 
-Both `agents` and `skills` accept `auto`, `include`, and `exclude`. Automatic selection defaults to on, while explicit extras default to empty. Set `auto` to `false` for a manual-only list. `include` adds available IDs, and `exclude` wins over both automatic selection and inclusion. Unknown IDs are errors, not ignored requests. Agent IDs must exist in configured sources; skill IDs must exist in the installed package's tuning content.
+Automatic commands are `sherpa-js-check`, `sherpa-php-check`, and `sherpa-rust-check`, selected for their detected stacks. They ask the agent to inspect project tooling and run relevant configured checks, not install tools or assume a fixed test command. Invoke a selected command with, for example, `/sherpa-js-check <task>`. The `sherpa-write-issue` and `sherpa-write-pr` commands are opt-in drafting helpers. Selecting a command does not implicitly enable its related skill.
+
+Bundled instruction selection follows the same stack rules: `10-js-development`, `20-php-development`, and `30-rust-development`. The common `00-sherpa-principles` instruction is selected by default for every project. Selected instruction bodies are combined into Sherpa's marked block in root `AGENTS.md`; they do not create separate project instruction files.
+
+All four content settings—`agents`, `skills`, `commands`, and `instructions`—accept `auto`, `include`, and `exclude`. Automatic selection defaults to on, while explicit extras default to empty. Set `auto` to `false` for a manual-only list. `include` adds available IDs, and `exclude` wins over both automatic selection and inclusion. Unknown IDs are errors, not ignored requests. Agent IDs must exist in configured sources; other IDs must exist in the installed package's tuning content. Command and instruction IDs are relative paths without `.md`, such as `git/status` or `00-sherpa-principles`.
+
+For example, keep only the common bundled instruction:
+
+```jsonc
+{
+  "instructions": {
+    "auto": false,
+    "include": ["00-sherpa-principles"]
+  }
+}
+```
+
+Sherpa's base language and code-writing rules remain in the managed block even when all bundled instructions are disabled. Uncataloged bundled commands and instructions are optional and require an explicit include, just like uncataloged skills.
 
 `sherpa sync --dry-run` reports detected stacks, framework features, manifest evidence, selected IDs, reasons, and planned file changes. Nothing is enabled globally or loaded by every agent automatically: project skills remain on-demand OpenCode skills.
 
@@ -137,14 +159,14 @@ Existing servers are never replaced. GitHub uses OpenCode-managed OAuth by defau
 
 ## Materialized project files
 
-- Root `AGENTS.md`: Sherpa-managed instruction block; surrounding user content is preserved.
+- Root `AGENTS.md`: base rules and selected instructions inside Sherpa's managed block; surrounding user content is preserved.
 - `.opencode/skills/`: selected packaged skills and their support files.
-- `.opencode/commands/`: packaged Markdown prompt templates.
+- `.opencode/commands/`: selected packaged Markdown prompt templates.
 - `opencode.json(c)`: missing project MCP entries under `mcp.servers` only.
 - `.opencode/oh-my-opencode-slim*`: source-derived project agents, when OMO-Slim is used.
 - `.opencode/.sherpa-files.json`: ownership hashes for managed packaged skill/command files.
 
-Tuning content is discovered recursively from the installed package's `tuning/` directory; filenames are not listed in code:
+Tuning content is discovered recursively from the installed package's `tuning/` directory. Discovery does not require a hardcoded file list; curated automatic selection rules are separate:
 
 ```text
 tuning/
@@ -153,7 +175,7 @@ tuning/
 └── commands/**/*.md
 ```
 
-Instruction Markdown is combined in deterministic path order and written inside Sherpa's marked block in `AGENTS.md`. A skill requires YAML frontmatter `description`; use its directory ID as the frontmatter `name`. Supporting files beside `SKILL.md` are copied with it. Uncataloged bundled skills are optional and require an explicit include. Command names come from relative paths (`git/status.md` becomes `/git/status`). Commands are prompt templates, not shell scripts; `$ARGUMENTS` is replaced with entered text. If the placeholder is absent, arguments are appended to the prompt.
+Instruction Markdown IDs come from relative paths without `.md`; selected bodies are combined in deterministic path order and written inside Sherpa's marked block in `AGENTS.md`. A skill requires YAML frontmatter `description`; use its directory ID as the frontmatter `name`. Supporting files beside `SKILL.md` are copied with it. Uncataloged bundled skills are optional and require an explicit include. Command names come from relative paths (`git/status.md` becomes `/git/status`). Commands are prompt templates, not shell scripts; `$ARGUMENTS` is replaced with entered text. If the placeholder is absent, arguments are appended to the prompt.
 
 Sherpa does not enforce runtime permissions. The former permission hook is removed; OpenCode's configured permission rules remain responsible for access control.
 

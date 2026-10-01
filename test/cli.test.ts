@@ -50,8 +50,17 @@ function createSelectionTuning(root: string): void {
     write(`tuning/skills/${id}/SKILL.md`, `---\nname: ${id}\ndescription: Guidance for ${id}.\n---\n\n${id} guidance.\n`);
     write(`tuning/skills/${id}/references/checklist.md`, `Checklist for ${id}.\n`);
   }
+  write("tuning/instructions/00-sherpa-principles.md", "Common Sherpa guidance.\n");
+  write("tuning/instructions/10-js-development.md", "JavaScript Sherpa guidance.\n");
+  write("tuning/instructions/20-php-development.md", "PHP Sherpa guidance.\n");
+  write("tuning/instructions/30-rust-development.md", "Rust Sherpa guidance.\n");
   write("tuning/skills/review/SKILL.md", "---\ndescription: Review changes.\n---\nCheck correctness.\n");
   write("tuning/commands/review.md", "Review $ARGUMENTS.\n");
+  write("tuning/commands/sherpa-js-check.md", "Run JavaScript checks.\n");
+  write("tuning/commands/sherpa-php-check.md", "Run PHP checks.\n");
+  write("tuning/commands/sherpa-rust-check.md", "Run Rust checks.\n");
+  write("tuning/commands/sherpa-write-issue.md", "Write an issue.\n");
+  write("tuning/commands/sherpa-write-pr.md", "Write a pull request.\n");
 }
 
 function projectAgents(): SherpaOmoAgent[] {
@@ -129,7 +138,7 @@ test("syncs project tuning, MCP, and OMO entries while preserving user data", as
   mkdirSync(project);
   createTuning(packageRoot);
   try {
-    fixtureData.write(project, "opencode-sherpa.jsonc", '{"agentSources":[],"skills":{"include":["review"]}}\n');
+    fixtureData.write(project, "opencode-sherpa.jsonc", '{"agentSources":[],"commands":{"include":["review"]},"instructions":{"include":["00-core"]},"skills":{"include":["review"]}}\n');
     fixtureData.write(project, "AGENTS.md", "# Existing project guidance\n\nKeep this text.\n");
     const opencodeConfig = fixtureData.write(project, "opencode.jsonc", [
       "{",
@@ -197,7 +206,7 @@ test("dry-run reports planned writes without changing project files", async () =
   const packageRoot = path.join(fixtureData.root, "package");
   mkdirSync(project);
   createTuning(packageRoot);
-  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skills":{"include":["review"]}}\n');
+  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"commands":{"include":["review"]},"instructions":{"include":["00-core"]},"skills":{"include":["review"]}}\n');
   try {
     const output: string[] = [];
     const exitCode = await runCli(["sync", "--project", project, "--dry-run"], {
@@ -223,7 +232,7 @@ test("sync detects mixed repository stacks, selects curated content, and removes
   mkdirSync(project);
   createMixedProject(fixtureData.write, project);
   createSelectionTuning(packageRoot);
-  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[]}\n');
+  fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({ agentSources: [], commands: { include: ["review"] } }));
   fixtureData.write(project, "opencode.jsonc", '{"mcp":{"servers":{"user-server":{"enabled":true}}}}\n');
   fixtureData.write(project, ".opencode/oh-my-opencode-slim.jsonc", '{"agents":{"reviewer":{"model":"user/reviewer"}}}\n');
   fixtureData.write(project, ".opencode/oh-my-opencode-slim/user-prompt.md", "User prompt.\n");
@@ -253,6 +262,11 @@ test("sync detects mixed repository stacks, selects curated content, and removes
     }
     expect(dryRun.messages).toContain("- sherpa-fixture-laravel-specialist: Matched detected laravel feature.");
     expect(dryRun.messages).toContain("- sherpa-laravel-development: Matched detected laravel feature.");
+    expect(dryRun.messages).toContain("- sherpa-js-check: Matched detected js stack.");
+    expect(dryRun.messages).toContain("- sherpa-php-check: Matched detected php stack.");
+    expect(dryRun.messages).toContain("- sherpa-rust-check: Matched detected rust stack.");
+    expect(dryRun.messages).toContain("- 00-sherpa-principles: Common project guidance.");
+    expect(dryRun.messages).toContain("- 10-js-development: Matched detected js stack.");
     expect(dryRun.messages).toContain("Would write .opencode/skills/sherpa-js-development/SKILL.md");
     expect(dryRun.messages).not.toContain("Would write .opencode/skills/extra/optional-skill/SKILL.md");
     expect(dryRun.messages).not.toContain("Would write .opencode/skills/review/SKILL.md");
@@ -280,6 +294,19 @@ test("sync detects mixed repository stacks, selects curated content, and removes
       expect(() => readFileSync(path.join(project, `.opencode/skills/${skill}/SKILL.md`))).toThrow();
     }
     expect(readFileSync(path.join(project, ".opencode/commands/review.md"), "utf8")).toBe("Review $ARGUMENTS.\n");
+    for (const [name, body] of [
+      ["sherpa-js-check", "Run JavaScript checks.\n"],
+      ["sherpa-php-check", "Run PHP checks.\n"],
+      ["sherpa-rust-check", "Run Rust checks.\n"],
+    ] as const) {
+      expect(readFileSync(path.join(project, `.opencode/commands/${name}.md`), "utf8")).toBe(body);
+    }
+    const selectedInstructions = readFileSync(path.join(project, "AGENTS.md"), "utf8");
+    expect(selectedInstructions).toContain("JavaScript Sherpa guidance.");
+    expect(selectedInstructions).toContain("PHP Sherpa guidance.");
+    expect(selectedInstructions).toContain("Rust Sherpa guidance.");
+    expect(() => readFileSync(path.join(project, ".opencode/commands/sherpa-write-issue.md"))).toThrow();
+    expect(() => readFileSync(path.join(project, ".opencode/commands/sherpa-write-pr.md"))).toThrow();
     const omo = parseJsonc(readFileSync(path.join(project, ".opencode/oh-my-opencode-slim.jsonc"), "utf8")) as {
       agents: Record<string, unknown>;
     };
@@ -300,6 +327,7 @@ test("sync detects mixed repository stacks, selects curated content, and removes
     fixtureData.write(project, ".opencode/skills/user-owned/SKILL.md", "User-owned skill.\n");
     fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
       agentSources: [],
+      commands: { include: ["review"] },
       agents: { auto: false, include: ["sherpa-fixture-php-pro"] },
       skills: { auto: false, include: ["sherpa-php-development"] },
     }));
@@ -327,20 +355,197 @@ test("sync detects mixed repository stacks, selects curated content, and removes
   }
 });
 
+test("selects stack-matched commands and instructions with common guidance", async () => {
+  const fixtureData = fixture();
+  const packageRoot = path.join(fixtureData.root, "package");
+  createSelectionTuning(packageRoot);
+  const cases = [
+    {
+      name: "js",
+      manifest: (write: FixtureWrite, project: string) => write(project, "package.json", '{"dependencies":{"typescript":"^5"}}'),
+      commands: ["sherpa-js-check"],
+      instructions: ["10-js-development"],
+    },
+    {
+      name: "php",
+      manifest: (write: FixtureWrite, project: string) => write(project, "composer.json", '{"require":{"phpunit/phpunit":"^11"}}'),
+      commands: ["sherpa-php-check"],
+      instructions: ["20-php-development"],
+    },
+    {
+      name: "rust",
+      manifest: (write: FixtureWrite, project: string) => write(project, "Cargo.toml", '[package]\nname = "fixture"\nversion = "0.1.0"\n[dependencies]\nserde = "1"\n'),
+      commands: ["sherpa-rust-check"],
+      instructions: ["30-rust-development"],
+    },
+    {
+      name: "mixed",
+      manifest: createMixedProject,
+      commands: ["sherpa-js-check", "sherpa-php-check", "sherpa-rust-check"],
+      instructions: ["10-js-development", "20-php-development", "30-rust-development"],
+    },
+  ] as const;
+
+  try {
+    for (const item of cases) {
+      const project = path.join(fixtureData.root, `project-${item.name}`);
+      mkdirSync(project);
+      item.manifest(fixtureData.write, project);
+      fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[]}\n');
+      const beforeDryRun = snapshotFiles(project);
+      const dryRun = await syncProject({ projectDirectory: project, packageRoot, dryRun: true });
+      expect(snapshotFiles(project)).toEqual(beforeDryRun);
+      const result = await syncProject({ projectDirectory: project, packageRoot });
+      const normalize = (message: string) => message
+        .replace(/^Would write /u, "Wrote ")
+        .replace(/^Would remove /u, "Removed ")
+        .replace(/^Would update /u, "Updated ");
+      expect(dryRun.messages.map(normalize)).toEqual([...result.messages]);
+      expect(dryRun.messages).toContain("- 00-sherpa-principles: Common project guidance.");
+
+      const selectedCommands = new Set<string>(item.commands);
+      for (const name of ["sherpa-js-check", "sherpa-php-check", "sherpa-rust-check", "sherpa-write-issue", "sherpa-write-pr", "review"]) {
+        const file = path.join(project, `.opencode/commands/${name}.md`);
+        if (selectedCommands.has(name)) {
+          expect(readFileSync(file, "utf8")).toBe(name === "sherpa-js-check"
+            ? "Run JavaScript checks.\n"
+            : name === "sherpa-php-check"
+              ? "Run PHP checks.\n"
+              : "Run Rust checks.\n");
+        } else {
+          expect(() => readFileSync(file)).toThrow();
+        }
+      }
+
+      const instructionBlock = readFileSync(path.join(project, "AGENTS.md"), "utf8");
+      expect(instructionBlock).toContain("Common Sherpa guidance.");
+      const selectedInstructions = new Set<string>(item.instructions);
+      for (const [id, body] of [
+        ["10-js-development", "JavaScript Sherpa guidance."],
+        ["20-php-development", "PHP Sherpa guidance."],
+        ["30-rust-development", "Rust Sherpa guidance."],
+      ] as const) {
+        expect(instructionBlock.includes(body)).toBe(selectedInstructions.has(id));
+      }
+      for (const name of ["sherpa-js-check", "sherpa-php-check", "sherpa-rust-check"]) {
+        expect(dryRun.messages.includes(`- ${name}: Matched detected ${name === "sherpa-js-check" ? "js" : name === "sherpa-php-check" ? "php" : "rust"} stack.`))
+          .toBe(selectedCommands.has(name));
+      }
+    }
+  } finally {
+    fixtureData.dispose();
+  }
+});
+
+test("auto false includes manual content and exclusions take priority", async () => {
+  const fixtureData = fixture();
+  const project = path.join(fixtureData.root, "project");
+  const packageRoot = path.join(fixtureData.root, "package");
+  mkdirSync(project);
+  createSelectionTuning(packageRoot);
+  fixtureData.write(project, "package.json", '{"dependencies":{"typescript":"^5"}}');
+  fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
+    agentSources: [],
+    commands: { auto: false, include: ["sherpa-js-check", "sherpa-write-issue"], exclude: ["sherpa-js-check"] },
+    instructions: { auto: false, include: ["00-core", "10-js-development"], exclude: ["10-js-development"] },
+  }));
+
+  try {
+    const result = await syncProject({ projectDirectory: project, packageRoot });
+    expect(result.messages).toContain("- sherpa-write-issue: Explicitly included.");
+    expect(result.messages).not.toContain("- sherpa-js-check: Matched detected js stack.");
+    expect(result.messages).toContain("- 00-core: Explicitly included.");
+    expect(result.messages).not.toContain("- 10-js-development: Explicitly included.");
+    expect(readFileSync(path.join(project, ".opencode/commands/sherpa-write-issue.md"), "utf8")).toBe("Write an issue.\n");
+    expect(() => readFileSync(path.join(project, ".opencode/commands/sherpa-js-check.md"))).toThrow();
+    const content = readFileSync(path.join(project, "AGENTS.md"), "utf8");
+    expect(content).toContain("Prefer focused changes.");
+    expect(content).not.toContain("Common Sherpa guidance.");
+    expect(content).not.toContain("JavaScript Sherpa guidance.");
+  } finally {
+    fixtureData.dispose();
+  }
+});
+
+test("selection shrink cleans owned commands and instructions without touching user content", async () => {
+  const fixtureData = fixture();
+  const project = path.join(fixtureData.root, "project");
+  const packageRoot = path.join(fixtureData.root, "package");
+  mkdirSync(project);
+  createMixedProject(fixtureData.write, project);
+  createSelectionTuning(packageRoot);
+  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"language":"Hungarian"}\n');
+  fixtureData.write(project, "AGENTS.md", "# User before\n\n# User after\n");
+
+  try {
+    await syncProject({ projectDirectory: project, packageRoot });
+    const agentsFile = path.join(project, "AGENTS.md");
+    const generated = readFileSync(agentsFile, "utf8");
+    writeFileSync(agentsFile, `${generated.replace("# User after", "")}\n# User after\n`);
+    const editedCommand = path.join(project, ".opencode/commands/sherpa-php-check.md");
+    writeFileSync(editedCommand, "User-edited PHP command.\n");
+    const customCommand = fixtureData.write(project, ".opencode/commands/custom.md", "User-owned custom command.\n");
+    fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
+      agentSources: [],
+      language: "Hungarian",
+      commands: { auto: false, include: ["review"] },
+      instructions: { auto: false },
+      agents: { auto: false },
+      skills: { auto: false },
+    }));
+
+    const reduced = await syncProject({ projectDirectory: project, packageRoot });
+    expect(reduced.messages).toContain("Preserved user file .opencode/commands/sherpa-php-check.md");
+    expect(reduced.messages).toContain("Removed .opencode/commands/sherpa-js-check.md");
+    expect(reduced.messages).toContain("Removed .opencode/commands/sherpa-rust-check.md");
+    expect(readFileSync(editedCommand, "utf8")).toBe("User-edited PHP command.\n");
+    expect(readFileSync(customCommand, "utf8")).toBe("User-owned custom command.\n");
+    expect(readFileSync(path.join(project, ".opencode/commands/review.md"), "utf8")).toBe("Review $ARGUMENTS.\n");
+    const manifest = JSON.parse(readFileSync(path.join(project, ".opencode/.sherpa-files.json"), "utf8")) as {
+      files: Record<string, string>;
+    };
+    for (const name of ["sherpa-js-check", "sherpa-php-check", "sherpa-rust-check"]) {
+      expect(manifest.files[`.opencode/commands/${name}.md`]).toBeUndefined();
+    }
+    const agents = readFileSync(agentsFile, "utf8");
+    expect(agents).toContain("# User before");
+    expect(agents).toContain("# User after");
+    expect(agents).toContain("Use Hungarian for conversation");
+    expect(agents).toContain("Write new code identifiers");
+    expect(agents).not.toContain("Common Sherpa guidance.");
+    expect(agents).not.toContain("JavaScript Sherpa guidance.");
+    expect(agents).not.toContain("PHP Sherpa guidance.");
+    expect(agents).not.toContain("Rust Sherpa guidance.");
+
+    const beforeSecondApply = snapshotFiles(project);
+    const second = await syncProject({ projectDirectory: project, packageRoot });
+    expect(second.messages).toContain("Project is up to date.");
+    expect(snapshotFiles(project)).toEqual(beforeSecondApply);
+  } finally {
+    fixtureData.dispose();
+  }
+});
+
 test("empty and disabled detection select only explicit content", async () => {
   const fixtureData = fixture();
   const emptyProject = path.join(fixtureData.root, "empty-project");
+  const disabledAutoProject = path.join(fixtureData.root, "disabled-auto-project");
   const disabledProject = path.join(fixtureData.root, "disabled-project");
   const packageRoot = path.join(fixtureData.root, "package");
   mkdirSync(emptyProject);
+  mkdirSync(disabledAutoProject);
   mkdirSync(disabledProject);
   createSelectionTuning(packageRoot);
   fixtureData.write(emptyProject, "opencode-sherpa.json", '{"agentSources":[]}\n');
+  fixtureData.write(disabledAutoProject, "package.json", '{"dependencies":{"typescript":"^5"}}');
+  fixtureData.write(disabledAutoProject, "opencode-sherpa.json", '{"agentSources":[],"detection":{"enabled":false}}');
   fixtureData.write(disabledProject, "package.json", '{"dependencies":{"typescript":"^5"}}\n');
   fixtureData.write(disabledProject, "opencode-sherpa.json", JSON.stringify({
     agentSources: [],
     detection: { enabled: false },
     agents: { auto: false, include: ["sherpa-fixture-extra"] },
+    commands: { include: ["review"] },
+    instructions: { include: ["00-core"] },
     skills: { auto: false, include: ["extra/optional-skill"] },
   }));
   const agents = projectAgents();
@@ -351,8 +556,21 @@ test("empty and disabled detection select only explicit content", async () => {
     expect(empty.messages).toContain("Manifest evidence: none");
     expect(empty.messages).toContain("Selected agents: none");
     expect(empty.messages).toContain("Selected skills: none");
+    expect(empty.messages).toContain("Selected commands: none");
+    expect(empty.messages).toContain("- 00-sherpa-principles: Common project guidance.");
+    expect(readFileSync(path.join(emptyProject, "AGENTS.md"), "utf8")).toContain("Common Sherpa guidance.");
+    expect(readFileSync(path.join(emptyProject, "AGENTS.md"), "utf8")).not.toContain("JavaScript Sherpa guidance.");
+    expect(() => readFileSync(path.join(emptyProject, ".opencode/commands/sherpa-write-issue.md"))).toThrow();
     expect(() => readFileSync(path.join(emptyProject, ".opencode/oh-my-opencode-slim.json"))).toThrow();
     expect(() => readFileSync(path.join(emptyProject, ".opencode/skills/sherpa-php-development/SKILL.md"))).toThrow();
+
+    const disabledAuto = await syncProject({ projectDirectory: disabledAutoProject, packageRoot });
+    expect(disabledAuto.messages).toContain("Detected stacks: none");
+    expect(disabledAuto.messages).toContain("Selected commands: none");
+    expect(disabledAuto.messages).toContain("- 00-sherpa-principles: Common project guidance.");
+    const disabledAutoInstructions = readFileSync(path.join(disabledAutoProject, "AGENTS.md"), "utf8");
+    expect(disabledAutoInstructions).toContain("Common Sherpa guidance.");
+    expect(disabledAutoInstructions).not.toContain("JavaScript Sherpa guidance.");
 
     const manual = await syncProject({ projectDirectory: disabledProject, packageRoot }, {
       resolveSources: async () => ({ agents, sources: [], diagnostics: [] }),
@@ -360,10 +578,15 @@ test("empty and disabled detection select only explicit content", async () => {
     expect(manual.messages).toContain("Detected stacks: none");
     expect(manual.messages).toContain("- sherpa-fixture-extra: Explicitly included.");
     expect(manual.messages).toContain("- extra/optional-skill: Explicitly included.");
+    expect(manual.messages).toContain("- review: Explicitly included.");
+    expect(manual.messages).toContain("- 00-core: Explicitly included.");
+    expect(manual.messages).toContain("- 00-sherpa-principles: Common project guidance.");
     expect(readFileSync(path.join(disabledProject, ".opencode/oh-my-opencode-slim/sherpa-fixture-extra.md"), "utf8"))
       .toContain("Do focused work.");
     expect(readFileSync(path.join(disabledProject, ".opencode/skills/extra/optional-skill/SKILL.md"), "utf8"))
       .toContain("extra/optional-skill guidance.");
+    expect(readFileSync(path.join(disabledProject, ".opencode/commands/review.md"), "utf8")).toBe("Review $ARGUMENTS.\n");
+    expect(readFileSync(path.join(disabledProject, "AGENTS.md"), "utf8")).toContain("Prefer focused changes.");
     expect(() => readFileSync(path.join(disabledProject, ".opencode/skills/sherpa-js-development/SKILL.md"))).toThrow();
   } finally {
     fixtureData.dispose();
@@ -379,10 +602,17 @@ test("invalid preferences, manifests, and content IDs fail before project writes
   };
   const cases: InvalidCase[] = [
     { name: "invalid detection options", settings: '{"agentSources":[],"detection":{"enabled":"no"}}', setup: () => undefined, resolves: false },
+    { name: "null command selection", settings: JSON.stringify({ agentSources: [], commands: null }), setup: () => undefined, resolves: false },
+    { name: "null instruction selection", settings: JSON.stringify({ agentSources: [], instructions: null }), setup: () => undefined, resolves: false },
+    { name: "unknown top-level command setting", settings: '{"agentSources":[],"commandss":{}}', setup: () => undefined, resolves: false },
+    { name: "unsupported command selection field", settings: JSON.stringify({ agentSources: [], commands: { optional: true } }), setup: () => undefined, resolves: false },
+    { name: "unsupported instruction selection field", settings: JSON.stringify({ agentSources: [], instructions: { optional: true } }), setup: () => undefined, resolves: false },
     { name: "malformed project manifest", settings: '{"agentSources":[]}', setup: (write, project) => { write(project, "package.json", "{bad json"); }, resolves: false },
     { name: "unknown agent ID", settings: JSON.stringify({ agentSources: [], agents: { include: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
     { name: "unknown agent exclude ID", settings: JSON.stringify({ agentSources: [], agents: { exclude: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
     { name: "unknown skill ID", settings: JSON.stringify({ agentSources: [], skills: { include: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
+    { name: "unknown command ID", settings: JSON.stringify({ agentSources: [], commands: { include: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
+    { name: "unknown instruction ID", settings: JSON.stringify({ agentSources: [], instructions: { exclude: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
     { name: "malformed ownership manifest", settings: '{"agentSources":[]}', setup: (write, project) => { write(project, ".opencode/.sherpa-files.json", "{}\n"); }, resolves: true },
   ];
 
@@ -413,26 +643,31 @@ test("invalid preferences, manifests, and content IDs fail before project writes
   }
 });
 
-test("null detection configuration fails before resolution for sync and dry-run", async () => {
-  for (const dryRun of [false, true]) {
-    const fixtureData = fixture();
-    const project = path.join(fixtureData.root, "project");
-    mkdirSync(project);
-    fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"detection":null}\n');
-    let resolveCount = 0;
-    const before = snapshotFiles(project);
+test("null detection and content selection fail before resolution for sync and dry-run", async () => {
+  for (const setting of ["detection", "commands", "instructions"]) {
+    for (const dryRun of [false, true]) {
+      const fixtureData = fixture();
+      const project = path.join(fixtureData.root, "project");
+      mkdirSync(project);
+      fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({ agentSources: [], [setting]: null }));
+      let resolveCount = 0;
+      const before = snapshotFiles(project);
 
-    try {
-      await expect(syncProject({ projectDirectory: project, dryRun }, {
-        resolveSources: async () => {
-          resolveCount += 1;
-          return { agents: [], sources: [], diagnostics: [] };
-        },
-      })).rejects.toThrow("Project detection options must be an object.");
-      expect(resolveCount).toBe(0);
-      expect(snapshotFiles(project)).toEqual(before);
-    } finally {
-      fixtureData.dispose();
+      try {
+        const result = syncProject({ projectDirectory: project, dryRun }, {
+          resolveSources: async () => {
+            resolveCount += 1;
+            return { agents: [], sources: [], diagnostics: [] };
+          },
+        });
+        await expect(result).rejects.toThrow(setting === "detection"
+          ? "Project detection options must be an object."
+          : "Content selection must be an object.");
+        expect(resolveCount).toBe(0);
+        expect(snapshotFiles(project)).toEqual(before);
+      } finally {
+        fixtureData.dispose();
+      }
     }
   }
 });
@@ -478,7 +713,7 @@ test("preserves user-owned command and skill files", async () => {
   const packageRoot = path.join(fixtureData.root, "package");
   mkdirSync(project);
   createTuning(packageRoot);
-  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skills":{"include":["review"]}}\n');
+  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"commands":{"include":["review"]},"skills":{"include":["review"]}}\n');
   const userCommand = fixtureData.write(project, ".opencode/commands/review.md", "User command.\n");
   const userSkill = fixtureData.write(project, ".opencode/skills/review/SKILL.md", "User skill.\n");
   try {

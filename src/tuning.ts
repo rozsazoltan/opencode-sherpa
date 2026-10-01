@@ -19,8 +19,14 @@ export interface PackagedCommand {
   readonly path: string;
 }
 
+export interface PackagedInstruction {
+  readonly id: string;
+  readonly path: string;
+  readonly content: string;
+}
+
 export interface SherpaTuning {
-  readonly instructions: readonly string[];
+  readonly instructions: readonly PackagedInstruction[];
   readonly skills: readonly PackagedSkill[];
   readonly commands: readonly PackagedCommand[];
 }
@@ -166,6 +172,22 @@ function readCommands(directory: string): PackagedCommand[] {
   });
 }
 
+function readInstructions(directory: string): PackagedInstruction[] {
+  const ids = new Set<string>();
+  return markdownFiles(directory).flatMap((file) => {
+    const content = readFileSync(file, "utf8");
+    if (!content.trim()) return [];
+
+    const instructionPath = path.join(path.dirname(file), path.basename(file).replace(/\.md$/iu, ""));
+    const id = validatedRelativeName(directory, instructionPath);
+    if (ids.has(id)) {
+      throw new Error(`Duplicate packaged instruction ID '${id}' derived from ${file}.`);
+    }
+    ids.add(id);
+    return [{ id, path: file, content }];
+  });
+}
+
 export function loadSherpaTuning(packageRoot = PACKAGE_ROOT): SherpaTuning {
   const tuningRoot = path.join(packageRoot, CONTENT_ROOT);
   if (existsSync(tuningRoot)) {
@@ -174,10 +196,7 @@ export function loadSherpaTuning(packageRoot = PACKAGE_ROOT): SherpaTuning {
       throw new Error(`Tuning content path must be a real directory: ${tuningRoot}`);
     }
   }
-  const instructionFiles = markdownFiles(path.join(tuningRoot, "instructions"));
-  const instructions = instructionFiles
-    .map((file) => readFileSync(file, "utf8").trim())
-    .filter((content) => content.length > 0);
+  const instructions = readInstructions(path.join(tuningRoot, "instructions"));
 
   return {
     instructions,

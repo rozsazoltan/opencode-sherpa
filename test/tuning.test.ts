@@ -18,7 +18,7 @@ test("discovers and orders project instructions, skills, and command Markdown", 
   const source = fixture();
   try {
     source.write("tuning/instructions/10-style.md", "Style rule.\n");
-    source.write("tuning/instructions/02-core.md", "Core rule.\n");
+    source.write("tuning/instructions/guides/02-core.MD", "Core rule.\n");
     source.write("tuning/skills/code-review/SKILL.md", [
       "---",
       "name: Code Review",
@@ -32,7 +32,18 @@ test("discovers and orders project instructions, skills, and command Markdown", 
     source.write("tuning/commands/git/status.md", "Summarize repository status.\n");
 
     const tuning = loadSherpaTuning(source.root);
-    expect(tuning.instructions).toEqual(["Core rule.", "Style rule."]);
+    expect(tuning.instructions).toEqual([
+      {
+        id: "10-style",
+        path: path.join(source.root, "tuning/instructions/10-style.md"),
+        content: "Style rule.\n",
+      },
+      {
+        id: "guides/02-core",
+        path: path.join(source.root, "tuning/instructions/guides/02-core.MD"),
+        content: "Core rule.\n",
+      },
+    ]);
     expect(tuning.skills).toMatchObject([{
       id: "code-review",
       name: "Code Review",
@@ -69,6 +80,24 @@ test("rejects missing skill descriptions and does not follow linked tuning files
       throw error;
     }
     expect(loadSherpaTuning(source.root).instructions).toEqual([]);
+  } finally {
+    source.dispose();
+  }
+});
+
+test("skips blank instructions and rejects duplicate or unsafe instruction IDs", () => {
+  const source = fixture();
+  try {
+    source.write("tuning/instructions/blank.md", " \n\t");
+    expect(loadSherpaTuning(source.root).instructions).toEqual([]);
+
+    source.write("tuning/instructions/nested/rule.md", "Rule.\n");
+    source.write("tuning/instructions/nested/rule.MD", "Duplicate.\n");
+    expect(() => loadSherpaTuning(source.root)).toThrow("Duplicate packaged instruction ID 'nested/rule'");
+
+    rmSync(path.join(source.root, "tuning/instructions"), { recursive: true, force: true });
+    source.write("tuning/instructions/Uppercase-name.md", "Unsafe ID.\n");
+    expect(() => loadSherpaTuning(source.root)).toThrow("Invalid tuning content name");
   } finally {
     source.dispose();
   }
