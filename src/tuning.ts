@@ -1,19 +1,22 @@
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Skill } from "@opencode/plugin";
-import type { Context } from "@opencode/plugin/promise/plugin";
-import type { CommandDefinition } from "@opencode/plugin/promise/command";
-import type { Registration } from "@opencode/plugin/promise/registration";
-import type { SkillEditor } from "@opencode/plugin/promise/skill";
 import { parse as parseYaml } from "yaml";
 
-type PackagedSkill = Parameters<SkillEditor["add"]>[0];
+export interface PackagedSkill {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly autoinvoke?: boolean;
+  readonly path: string;
+  readonly content: string;
+}
 
 export interface PackagedCommand {
   readonly name: string;
   readonly description?: string;
   readonly template: string;
+  readonly path: string;
 }
 
 export interface SherpaTuning {
@@ -34,7 +37,7 @@ function lexicalCompare(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function markdownFiles(directory: string): string[] {
+export function markdownFiles(directory: string): string[] {
   if (!existsSync(directory)) return [];
   const root = lstatSync(directory);
   if (!root.isDirectory() || root.isSymbolicLink()) {
@@ -132,11 +135,11 @@ function readSkills(directory: string): PackagedSkill[] {
       }
 
       return {
-        id: Skill.ID.make(id),
-        name: Skill.Name.make(displayName),
+        id,
+        name: displayName,
         description,
         ...(autoinvoke === undefined ? {} : { autoinvoke }),
-        path: file as PackagedSkill["path"],
+        path: file,
         content: body,
       };
     });
@@ -158,16 +161,9 @@ function readCommands(directory: string): PackagedCommand[] {
       name,
       ...(description === undefined ? {} : { description }),
       template: body,
+      path: file,
     };
   });
-}
-
-function renderCommandTemplate(template: string, argumentsText: string): string {
-  if (template.includes("$ARGUMENTS")) {
-    return template.replaceAll("$ARGUMENTS", () => argumentsText);
-  }
-  if (argumentsText.trim().length === 0) return template;
-  return `${template}\n\n${argumentsText}`;
 }
 
 export function loadSherpaTuning(packageRoot = PACKAGE_ROOT): SherpaTuning {
@@ -188,51 +184,4 @@ export function loadSherpaTuning(packageRoot = PACKAGE_ROOT): SherpaTuning {
     skills: readSkills(path.join(tuningRoot, "skills")),
     commands: readCommands(path.join(tuningRoot, "commands")),
   };
-}
-
-export async function registerSherpaSkills(
-  ctx: Pick<Context, "skill">,
-  skills: readonly PackagedSkill[],
-): Promise<Registration | undefined> {
-  if (skills.length === 0) return undefined;
-  return ctx.skill.transform((editor) => {
-    for (const skill of skills) {
-      if (editor.get(skill.id)) continue;
-      editor.add(skill);
-    }
-  });
-}
-
-export async function registerSherpaCommands(
-  ctx: Pick<Context, "command" | "session">,
-  commands: readonly PackagedCommand[],
-): Promise<Registration | undefined> {
-  if (commands.length === 0) return undefined;
-  return ctx.command.transform((editor) => {
-    for (const command of commands) {
-      const definition: CommandDefinition = {
-        name: command.name,
-        ...(command.description === undefined ? {} : { description: command.description }),
-        execute: async ({ sessionID, prompt, delivery }) => {
-          const text = renderCommandTemplate(command.template, prompt.text);
-          const files = prompt.files?.map(({ uri, name, description }) => ({
-            uri,
-            ...(name === undefined ? {} : { name }),
-            ...(description === undefined ? {} : { description }),
-          }));
-          const agents = prompt.agents?.map(({ name }) => ({ name }));
-          const skills = prompt.skills?.map(({ id }) => ({ id }));
-          await ctx.session.prompt({
-            sessionID,
-            text,
-            delivery,
-            ...(files === undefined ? {} : { files }),
-            ...(agents === undefined ? {} : { agents }),
-            ...(skills === undefined ? {} : { skills }),
-          });
-        },
-      };
-      editor.add(definition);
-    }
-  });
 }

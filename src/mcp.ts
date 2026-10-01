@@ -1,8 +1,6 @@
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Context } from "@opencode/plugin/promise/plugin";
-import type { Registration } from "@opencode/plugin/promise/registration";
 
 export interface McpOptions {
   /** Defaults to OpenCode-managed OAuth. */
@@ -71,37 +69,28 @@ function readGithubToken(tokenFile: string): string {
   return token;
 }
 
-/** Register the portable remote MCP servers without replacing existing entries. */
-export async function registerRemoteMcpServers(
-  ctx: Pick<Context, "mcp">,
+/** Return default remote MCP entries for merging into project-local OpenCode config. */
+export function createRemoteMcpServers(
   options?: McpOptions,
-): Promise<Registration> {
+  existingServers: Readonly<Record<string, unknown>> = {},
+): Record<string, unknown> {
   const validatedOptions = validateOptions(options);
   const useTokenFile = validatedOptions.githubAuth === "token-file";
+  const githubToken = useTokenFile && !Object.hasOwn(existingServers, "github")
+    ? readGithubToken(validatedOptions.githubTokenFile ?? defaultGithubTokenFile())
+    : undefined;
 
-  return ctx.mcp.transform((editor) => {
-    if (editor.get("github") === undefined) {
-      const githubToken = useTokenFile
-        ? readGithubToken(validatedOptions.githubTokenFile ?? defaultGithubTokenFile())
-        : undefined;
-      editor.set("github", githubToken === undefined
-        ? { type: "remote", url: GITHUB_URL }
-        : {
-            type: "remote",
-            url: GITHUB_URL,
-            oauth: false,
-            headers: { Authorization: `Bearer ${githubToken}` },
-          });
-    }
-
-    if (editor.get("jina") === undefined) {
-      editor.set("jina", { type: "remote", url: JINA_URL });
-    }
-    if (editor.get("context7") === undefined) {
-      editor.set("context7", { type: "remote", url: CONTEXT7_URL });
-    }
-    if (editor.get("gh_grep") === undefined) {
-      editor.set("gh_grep", { type: "remote", url: GH_GREP_URL });
-    }
-  });
+  return {
+    github: githubToken === undefined
+      ? { type: "remote", url: GITHUB_URL }
+      : {
+          type: "remote",
+          url: GITHUB_URL,
+          oauth: false,
+          headers: { Authorization: `Bearer ${githubToken}` },
+        },
+    jina: { type: "remote", url: JINA_URL },
+    context7: { type: "remote", url: CONTEXT7_URL },
+    gh_grep: { type: "remote", url: GH_GREP_URL },
+  };
 }
