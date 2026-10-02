@@ -1,4 +1,5 @@
 export const SHERPA_INSTALL_COMMAND = "sherpa-install";
+export const SHERPA_UPGRADE_COMMAND = "sherpa-upgrade";
 
 const PROJECT_STATE_PREFIX = "sherpa-bootstrap:v1:project:";
 const SESSION_REMINDER_PREFIX = "sherpa-bootstrap:v1:session:";
@@ -7,10 +8,10 @@ const DECLINED = "v1:declined";
 const REMINDED = "v1:reminded";
 
 const CONSENT_REMINDER =
-  "Would you like to enable OpenCode Sherpa for this project? It will add the pinned Sherpa CLI dependency to this project, which edits package.json and the package-manager lockfile and may run dependency lifecycle scripts. Reply exactly yes (or igen) to consent, or no (or nem) to decline. Nothing installs automatically.";
+  "Would you like to enable OpenCode Sherpa for this project? It can add or upgrade the pinned Sherpa CLI dependency, which edits package.json and the package-manager lockfile and may run dependency lifecycle scripts. Reply exactly yes to consent or no to decline. Nothing installs automatically.";
 
 const CONSENT_REQUIRED_NOTICE =
-  "Sherpa bootstrap is not approved for this project. Do not install anything. To approve, reply exactly yes (or igen) after the project consent reminder; to decline, reply no (or nem).";
+  "Sherpa bootstrap is not approved for this project. Do not install anything. To approve, reply exactly yes after the project consent reminder; to decline, reply no.";
 
 const INSTALL_REQUEST = [
   "The user explicitly approved Sherpa bootstrap for this project. Use ordinary permissioned shell tools only; do not bypass or suppress shell permission checks.",
@@ -19,6 +20,17 @@ const INSTALL_REQUEST = [
   "1. `pnpm add github:rozsazoltan/opencode-sherpa#e26316eeb7cdf83e6d77090c7aadcd7c13961753`",
   "2. Only if step 1 succeeds, run `pnpm exec sherpa sync`.",
   "The add command changes package.json and the lockfile, and may run dependency lifecycle scripts. Stop if step 1 fails. Do not substitute commands or run any additional install command.",
+].join("\n");
+
+const UPGRADE_REQUEST = [
+  "The user explicitly invoked /sherpa-upgrade and already approved Sherpa for this project. Use ordinary permissioned shell tools only; do not bypass or suppress shell permission checks.",
+  "Run commands in this session's verified project directory. Do not run globally or at workspace root. Stop if pnpm is missing or a workspace conflict makes the project target ambiguous. Do not use -g or -w, and do not interpolate user-supplied command arguments.",
+  "First verify package.json has `opencode-sherpa` in `dependencies` and its value points to `github:rozsazoltan/opencode-sherpa#<commit>`; otherwise stop and explain that Sherpa is not installed from the expected source. Do not change unrelated dependencies.",
+  "Resolve the current master commit with `git ls-remote https://github.com/rozsazoltan/opencode-sherpa.git refs/heads/master`. Continue only if output contains exactly one 40-character hexadecimal commit SHA. Do not use the branch name as the package spec.",
+  "Then run exactly this sequence:",
+  "1. `pnpm add github:rozsazoltan/opencode-sherpa#<resolved-40-character-commit-SHA>`.",
+  "2. Only if step 1 succeeds, run `pnpm exec sherpa sync`.",
+  "The add command updates the Sherpa dependency and lockfile, and may run dependency lifecycle scripts. Stop if step 1 fails. Do not substitute commands or run any additional install command.",
 ].join("\n");
 
 type StorageResult = unknown | Promise<unknown>;
@@ -117,8 +129,8 @@ function reminderKey(sessionID: string): string {
 
 function exactConsent(prompt: string): "accepted" | "declined" | undefined {
   const answer = prompt.trim();
-  if (answer === "yes" || answer === "igen") return "accepted";
-  if (answer === "no" || answer === "nem") return "declined";
+  if (answer === "yes") return "accepted";
+  if (answer === "no") return "declined";
   return undefined;
 }
 
@@ -193,20 +205,30 @@ export function registerSherpaBootstrap(ctx: BootstrapPluginContext): void {
     editor.add({
       name: SHERPA_INSTALL_COMMAND,
       description: "Install and sync project-local Sherpa after explicit project consent.",
-      execute: async ({ sessionID, delivery }) => {
-        const session = await getSession(sessionID);
-        let text = CONSENT_REQUIRED_NOTICE;
-        if (session && !session.isChild) {
-          const decision = await getDecision(projectKey(session));
-          if (decision === "accepted") text = INSTALL_REQUEST;
-        }
-
-        try {
-          await ctx.session.prompt({ sessionID, text, delivery });
-        } catch {
-          // Prompt delivery failure does not trigger a shell action or alter consent.
-        }
-      },
+      execute: async (input) => requestProjectCommand(input, INSTALL_REQUEST),
+    });
+    editor.add({
+      name: SHERPA_UPGRADE_COMMAND,
+      description: "Upgrade project-local Sherpa to the latest master commit and sync it.",
+      execute: async (input) => requestProjectCommand(input, UPGRADE_REQUEST),
     });
   });
+
+  async function requestProjectCommand(
+    { sessionID, delivery }: CommandInvocation,
+    request: string,
+  ): Promise<void> {
+    const session = await getSession(sessionID);
+    let text = CONSENT_REQUIRED_NOTICE;
+    if (session && !session.isChild) {
+      const decision = await getDecision(projectKey(session));
+      if (decision === "accepted") text = request;
+    }
+
+    try {
+      await ctx.session.prompt({ sessionID, text, delivery });
+    } catch {
+      // Prompt delivery failure does not trigger a shell action or alter consent.
+    }
+  }
 }

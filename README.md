@@ -40,12 +40,20 @@ To load the plugin, add its absolute checkout path to the `plugins` array in the
 
 Replace the example with the path to your checkout and preserve existing plugin entries. OpenCode's documentation does not specify a global config filesystem location or a GitHub-URL plugin installation method; this guide does not assume either. The plugin source is not included in the package's current `files` allowlist, so load it from a repository checkout.
 
-In an eligible root session, the plugin offers an opt-in reminder. Reply exactly `yes` or `igen` to approve bootstrap for that project, or `no` or `nem` to decline. The decision is per project. Approval alone does not install anything: invoke `/sherpa-install` explicitly. The plugin then asks the model to run these commands through permissioned OpenCode tools, in order:
+In an eligible root session, the plugin offers an opt-in reminder in English. Reply exactly `yes` to approve bootstrap for that project, or `no` to decline. The decision is per project. Approval alone does not install or update anything; invoke `/sherpa-install` or `/sherpa-upgrade` explicitly. Both commands ask the model to use ordinary permissioned OpenCode tools; the plugin does not execute shell commands.
+
+`/sherpa-install` installs the currently pinned revision:
 
 1. `pnpm add github:rozsazoltan/opencode-sherpa#e26316eeb7cdf83e6d77090c7aadcd7c13961753`
 2. Only after step 1 succeeds, `pnpm exec sherpa sync`
 
-Package installation edits the project manifest and lockfile and may run dependency lifecycle scripts; review and approve those effects. `/sherpa-install` is a plugin command, not a CLI subcommand. The CLI supports `sherpa sync`; there is no `sherpa install` command.
+`/sherpa-upgrade` checks that `opencode-sherpa` is already in the project's `dependencies`, resolves the current `master` commit with `git ls-remote`, validates its 40-character SHA, and updates the dependency to that SHA:
+
+1. `git ls-remote https://github.com/rozsazoltan/opencode-sherpa.git refs/heads/master`
+2. `pnpm add github:rozsazoltan/opencode-sherpa#<resolved-commit-SHA>`
+3. Only after step 2 succeeds, `pnpm exec sherpa sync`
+
+Both commands may change the project manifest and lockfile and may run dependency lifecycle scripts; review and approve those effects. `/sherpa-install` and `/sherpa-upgrade` are plugin commands, not CLI subcommands. The CLI supports `sherpa sync`; there is no `sherpa install` or `sherpa upgrade` command.
 
 The plugin targets the documented OpenCode Plugin API V2. This repository's `@opencode-ai/plugin@1.18.34` source is V1, so runtime compatibility has not been verified. Tests exercise a mocked V2 shape and do not establish runtime compatibility.
 

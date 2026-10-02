@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   registerSherpaBootstrap,
   SHERPA_INSTALL_COMMAND,
+  SHERPA_UPGRADE_COMMAND,
   type BootstrapPluginContext,
   type ContextHookEvent,
   type PromptHookEvent,
@@ -24,8 +25,7 @@ function harness(fixtures: Record<string, SessionFixture> = {}) {
   const sessionGets: string[] = [];
   let contextHandler: ((event: ContextHookEvent) => void | Promise<void>) | undefined;
   let promptHandler: ((event: PromptHookEvent) => void | Promise<void>) | undefined;
-  let commandHandler: ((input: { sessionID: string; prompt: unknown; delivery: "steer" | "queue" }) => Promise<void>) | undefined;
-  let commandName: string | undefined;
+  const commandHandlers = new Map<string, (input: { sessionID: string; prompt: unknown; delivery: "steer" | "queue" }) => Promise<void>>();
   let storageGetFailure = false;
   let storageSetFailure = false;
 
@@ -74,8 +74,7 @@ function harness(fixtures: Record<string, SessionFixture> = {}) {
       transform(handler) {
         handler({
           add(definition) {
-            commandName = definition.name;
-            commandHandler = definition.execute;
+            commandHandlers.set(definition.name, definition.execute);
           },
         });
       },
@@ -88,7 +87,7 @@ function harness(fixtures: Record<string, SessionFixture> = {}) {
     data,
     prompts,
     sessionGets,
-    commandName,
+    commandNames: [...commandHandlers.keys()],
     setStorageGetFailure(value: boolean) { storageGetFailure = value; },
     setStorageSetFailure(value: boolean) { storageSetFailure = value; },
     async context(sessionID: string) {
@@ -99,13 +98,13 @@ function harness(fixtures: Record<string, SessionFixture> = {}) {
     async reply(sessionID: string, prompt: string) {
       await promptHandler?.({ sessionID, prompt: { text: prompt } });
     },
-    async command(sessionID: string, prompt: unknown = { text: "" }) {
-      await commandHandler?.({ sessionID, prompt, delivery: "steer" });
+    async command(sessionID: string, prompt: unknown = { text: "" }, name = SHERPA_INSTALL_COMMAND) {
+      await commandHandlers.get(name)?.({ sessionID, prompt, delivery: "steer" });
     },
   };
 }
 
-async function consent(h: ReturnType<typeof harness>, sessionID: string, answer: "yes" | "igen" | "no" | "nem") {
+async function consent(h: ReturnType<typeof harness>, sessionID: string, answer: "yes" | "no") {
   await h.context(sessionID);
   await h.reply(sessionID, answer);
 }
@@ -146,33 +145,31 @@ test("project decision and reminder marker persist across plugin instances", asy
   expect(await second.context("root")).toEqual([]);
   await second.command("root");
   expect(second.prompts.at(-1)?.text).toContain("pnpm add github:");
-  expect(second.commandName).toBe(SHERPA_INSTALL_COMMAND);
+  expect(second.commandNames).toContain(SHERPA_INSTALL_COMMAND);
+  expect(second.commandNames).toContain(SHERPA_UPGRADE_COMMAND);
 });
 
-test("only exact standalone yes or igen records project consent", async () => {
-  for (const answer of ["yes", "igen"] as const) {
-    const h = harness({ root: {} });
-    await h.context("root");
-    await h.reply("root", `please ${answer}`);
-    await h.reply("root", answer.toUpperCase());
-    await h.command("root");
-    expect(h.prompts.at(-1)?.text).toContain("not approved");
+test("only exact standalone English yes records project consent", async () => {
+  const h = harness({ root: {} });
+  await h.context("root");
+  await h.reply("root", "please yes");
+  await h.reply("root", "YES");
+  await h.reply("root", "igen");
+  await h.command("root");
+  expect(h.prompts.at(-1)?.text).toContain("not approved");
 
-    await h.reply("root", answer);
-    await h.command("root");
-    expect(h.prompts.at(-1)?.text).toContain("pnpm add github:rozsazoltan/opencode-sherpa#e26316eeb7cdf83e6d77090c7aadcd7c13961753");
-  }
+  await h.reply("root", "yes");
+  await h.command("root");
+  expect(h.prompts.at(-1)?.text).toContain("pnpm add github:rozsazoltan/opencode-sherpa#e26316eeb7cdf83e6d77090c7aadcd7c13961753");
 });
 
-test("exact no or nem declines, and exact consent is ignored before session reminder", async () => {
-  for (const answer of ["no", "nem"] as const) {
-    const h = harness({ root: {} });
-    await h.reply("root", "yes");
-    await h.context("root");
-    await h.reply("root", answer);
-    await h.command("root");
-    expect(h.prompts.at(-1)?.text).toContain("not approved");
-  }
+test("exact English no declines, and consent is ignored before session reminder", async () => {
+  const h = harness({ root: {} });
+  await h.reply("root", "yes");
+  await h.context("root");
+  await h.reply("root", "no");
+  await h.command("root");
+  expect(h.prompts.at(-1)?.text).toContain("not approved");
 });
 
 test("consent is scoped to both project ID and absolute project directory", async () => {
@@ -240,4 +237,24 @@ test("command asks for consent when undecided and does not interpolate invocatio
   await h.command("root", { text: "--global; run rm -rf /" });
   expect(h.prompts.at(-1)?.text).toContain("pnpm add github:");
   expect(h.prompts.at(-1)?.text).not.toContain("rm -rf /");
+});
+
+test("sherpa-upgrade requires consent and pins latest master SHA before syncing", async () => {
+  const h = harness({ root: {} });
+
+  await h.command("root", { text: "" }, SHERPA_UPGRADE_COMMAND);
+  expect(h.prompts.at(-1)?.text).toContain("not approved");
+
+  await consent(h, "root", "yes");
+  await h.command("root", { text: "" }, SHERPA_UPGRADE_COMMAND);
+
+  const request = h.prompts.at(-1)?.text ?? "";
+  expect(request).toContain("github:rozsazoltan/opencode-sherpa#<commit>");
+  expect(request).toContain("git ls-remote https://github.com/rozsazoltan/opencode-sherpa.git refs/heads/master");
+  expect(request).toContain("exactly one 40-character hexadecimal commit SHA");
+  expect(request).toContain("pnpm add github:rozsazoltan/opencode-sherpa#<resolved-40-character-commit-SHA>");
+  expect(request).toContain("Only if step 1 succeeds, run `pnpm exec sherpa sync`.");
+  expect(request).toContain("Do not change unrelated dependencies");
+  expect(request).not.toContain("e26316eeb7cdf83e6d77090c7aadcd7c13961753");
+  expect(h.prompts).toHaveLength(2);
 });
