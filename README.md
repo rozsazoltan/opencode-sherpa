@@ -1,6 +1,6 @@
 # opencode-sherpa
 
-OpenCode Sherpa is a project-oriented CLI for materializing reusable OpenCode instructions, skills, commands, MCP entries, and OMO-Slim specialist agents. It has no OpenCode plugin runtime: run its CLI explicitly when you want to sync a project.
+OpenCode Sherpa is a project-specific CLI for syncing reusable OpenCode instructions, skills, commands, MCP entries, and OMO-Slim specialist agents. Run it explicitly in each project you want to sync. An optional global V2 plugin can help bootstrap the project-local CLI; it is a convenience, not a replacement for the CLI or the product focus.
 
 ## Requirements
 
@@ -10,12 +10,52 @@ OpenCode Sherpa is a project-oriented CLI for materializing reusable OpenCode in
 
 Sherpa is installed from GitHub and is not published to the npm registry. A small JavaScript launcher loads the packaged TypeScript source with Node.js 22.18+; no generated `dist/` directory or install-time build is required.
 
+Install the CLI in the target project from this fixed revision:
+
 ```sh
-pnpm add github:rozsazoltan/opencode-sherpa#<tag-or-commit>
+pnpm add github:rozsazoltan/opencode-sherpa#e26316eeb7cdf83e6d77090c7aadcd7c13961753
+```
+
+Package installation edits the project's manifest and lockfile and may run dependency lifecycle scripts. After installation succeeds, run sync explicitly:
+
+```sh
 pnpm exec sherpa sync
 ```
 
-Use a release tag when available, or a commit SHA for a fixed revision. Installing the package does not modify the project; `sync` performs the changes explicitly.
+Sync materializes selected Sherpa content in that project. It does not install or configure a global plugin.
+
+## Optional global bootstrap plugin
+
+The repository also contains `plugin/sherpa-bootstrap.ts`, an optional global bootstrap helper. It reminds you about the project-local CLI and requests setup only after you opt in. It never installs or syncs automatically, and it does not replace the CLI. The plugin never invokes a shell itself; after approval, it asks the model to use ordinary OpenCode tools, subject to the normal permission rules.
+
+To load the plugin, add its absolute checkout path to the `plugins` array in the global `opencode.json` or `opencode.jsonc` used by your OpenCode setup. The documented V2 configuration accepts absolute paths or `file:` URLs:
+
+```jsonc
+{
+  "plugins": [
+    "/absolute/path/to/opencode-sherpa/plugin/sherpa-bootstrap.ts"
+  ]
+}
+```
+
+Replace the example with the path to your checkout and preserve existing plugin entries. OpenCode's documentation does not specify a global config filesystem location or a GitHub-URL plugin installation method; this guide does not assume either. The plugin source is not included in the package's current `files` allowlist, so load it from a repository checkout.
+
+In an eligible root session, the plugin offers an opt-in reminder in English. Reply exactly `yes` to approve bootstrap for that project, or `no` to decline. The decision is per project. Approval alone does not install or update anything; invoke `/sherpa-install` or `/sherpa-upgrade` explicitly. Both commands ask the model to use ordinary permissioned OpenCode tools; the plugin does not execute shell commands.
+
+`/sherpa-install` installs the currently pinned revision:
+
+1. `pnpm add github:rozsazoltan/opencode-sherpa#e26316eeb7cdf83e6d77090c7aadcd7c13961753`
+2. Only after step 1 succeeds, `pnpm exec sherpa sync`
+
+`/sherpa-upgrade` checks that `opencode-sherpa` is already in the project's `dependencies`, resolves the current `master` commit with `git ls-remote`, validates its 40-character SHA, and updates the dependency to that SHA:
+
+1. `git ls-remote https://github.com/rozsazoltan/opencode-sherpa.git refs/heads/master`
+2. `pnpm add github:rozsazoltan/opencode-sherpa#<resolved-commit-SHA>`
+3. Only after step 2 succeeds, `pnpm exec sherpa sync`
+
+Both commands may change the project manifest and lockfile and may run dependency lifecycle scripts; review and approve those effects. `/sherpa-install` and `/sherpa-upgrade` are plugin commands, not CLI subcommands. The CLI supports `sherpa sync`; there is no `sherpa install` or `sherpa upgrade` command.
+
+The plugin targets the documented OpenCode Plugin API V2. This repository's `@opencode-ai/plugin@1.18.34` source is V1, so runtime compatibility has not been verified. Tests exercise a mocked V2 shape and do not establish runtime compatibility.
 
 ## Commands
 
@@ -232,7 +272,7 @@ tuning/
 
 Instruction Markdown IDs come from relative paths without `.md`; selected bodies are combined in deterministic path order and written inside Sherpa's marked block in `AGENTS.md`. A bundled skill requires YAML frontmatter `description`; use its directory ID as the frontmatter `name` when authoring Sherpa content. Imported skills retain their original frontmatter and use the namespaced directory ID. Supporting files beside `SKILL.md` are copied with it unless the source descriptor narrows them with `supportPaths`. Uncataloged bundled skills are optional and require an explicit include. Command names come from relative paths (`git/status.md` becomes `/git/status`). Commands are prompt templates, not shell scripts; `$ARGUMENTS` is replaced with entered text. If the placeholder is absent, arguments are appended to the prompt.
 
-Sherpa does not enforce runtime permissions. The former permission hook is removed; OpenCode's configured permission rules remain responsible for access control.
+The CLI does not intercept runtime permissions. Its former permission hook is removed; OpenCode's configured permission rules remain responsible for access control. The optional global bootstrap plugin is separate from CLI sync and only asks the model to use normal permissioned tools.
 
 ## Sync behavior and safety
 
