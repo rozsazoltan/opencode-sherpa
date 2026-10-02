@@ -412,21 +412,28 @@ function mappedFeatures(dependencies: Iterable<string>, mapping: Readonly<Record
 
 const JS_FEATURES: Readonly<Record<string, string>> = {
   "@angular/core": "angular",
+  "@pinia/nuxt": "pinia",
+  "@unocss/vite": "unocss",
   gsap: "gsap",
   next: "next",
   nuxt: "nuxt",
+  pinia: "pinia",
   react: "react",
   "react-dom": "react",
   tailwindcss: "tailwindcss",
   "typescript": "typescript",
   turbo: "turbo",
   vite: "vite",
+  vitepress: "vitepress",
   vitest: "vitest",
+  unocss: "unocss",
   vue: "vue",
 };
 
 const PHP_FEATURES: Readonly<Record<string, string>> = {
+  "laravel/fortify": "fortify",
   "laravel/framework": "laravel",
+  "laravel/wayfinder": "wayfinder",
   "pestphp/pest": "pest",
   "phpunit/phpunit": "phpunit",
   "symfony/framework-bundle": "symfony",
@@ -445,7 +452,12 @@ const RUST_FEATURES: Readonly<Record<string, string>> = {
 function jsFeatures(manifest: UnknownRecord): string[] {
   const deps = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]
     .flatMap((key) => dependencyNames(manifest[key]));
-  return mappedFeatures(deps, JS_FEATURES);
+  const features = new Set(mappedFeatures(deps, JS_FEATURES));
+  const packageManager = manifest.packageManager;
+  if (typeof packageManager === "string" && packageManager.startsWith("pnpm@") && packageManager.slice("pnpm@".length).trim()) {
+    features.add("pnpm");
+  }
+  return [...features].sort(lexicalCompare);
 }
 
 function phpFeatures(manifest: UnknownRecord): string[] {

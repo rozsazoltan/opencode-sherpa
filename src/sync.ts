@@ -16,7 +16,13 @@ import { createEngineeringInstructions } from "./instructions.ts";
 import { createRemoteMcpServers } from "./mcp.ts";
 import { reconcileSherpaOmoAgents } from "./omo-agents.ts";
 import { configuredProjectDetection, detectProject } from "./project-detection.ts";
-import { configuredContentSelection, selectProjectContent } from "./project-selection.ts";
+import { configuredContentSelection, selectProjectContent, selectProjectSkillIds } from "./project-selection.ts";
+import {
+  configuredSherpaSkillSources,
+  declaredSkillIds,
+  resolveSherpaSkillSources,
+  type SherpaSkillResolution,
+} from "./skill-sources.ts";
 import { loadSherpaTuning, type SherpaTuning } from "./tuning.ts";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,6 +53,7 @@ interface ArtifactPlan {
 
 interface ProjectSettings {
   readonly agentSources?: unknown;
+  readonly skillSources?: unknown;
   readonly mcp?: unknown;
   readonly language?: unknown;
   readonly detection?: unknown;
@@ -64,6 +71,7 @@ export interface SyncOptions {
 
 export interface SyncDependencies {
   readonly resolveSources?: typeof resolveSherpaAgentSources;
+  readonly resolveSkillSources?: typeof resolveSherpaSkillSources;
   readonly packageRoot?: string;
 }
 
@@ -95,7 +103,7 @@ function loadProjectSettings(projectDirectory: string): ProjectSettings {
   if (source === undefined) return {};
   const parsed = parseJsoncObject(source, `OpenCode Sherpa config ${configPath}`);
   const unsupported = Object.keys(parsed).find((key) =>
-    !["agentSources", "mcp", "language", "detection", "agents", "commands", "instructions", "skills"].includes(key));
+    !["agentSources", "skillSources", "mcp", "language", "detection", "agents", "commands", "instructions", "skills"].includes(key));
   if (unsupported) throw new Error(`Unsupported OpenCode Sherpa config option: ${unsupported}.`);
   return parsed;
 }
@@ -165,8 +173,14 @@ function mergeInstructions(existing: string | undefined, block: string, file: st
 function collectSkillFiles(tuning: SherpaTuning): Map<string, Buffer> {
   const files = new Map<string, Buffer>();
   for (const skill of tuning.skills) {
-    const sourceRoot = path.dirname(skill.path);
     const targetRoot = path.join(".opencode", "skills", ...skill.id.split("/"));
+    if (skill.files) {
+      for (const [relative, contents] of skill.files) {
+        files.set(path.posix.join(targetRoot.split(path.sep).join("/"), relative), Buffer.from(contents));
+      }
+      continue;
+    }
+    const sourceRoot = path.dirname(skill.path);
     const visit = (sourceDirectory: string, relativeDirectory: string): void => {
       const stat = lstatSync(sourceDirectory);
       if (!stat.isDirectory() || stat.isSymbolicLink()) {
@@ -397,6 +411,110 @@ function printSelection(
   return messages;
 }
 
+function validateExternalSkillResolution(
+  resolution: SherpaSkillResolution,
+  requestedIds: readonly string[],
+): void {
+  if (!resolution || !Array.isArray(resolution.skills) || !Array.isArray(resolution.sources) ||
+    !Array.isArray(resolution.diagnostics)) {
+    throw new Error("Skill source resolver returned an invalid result.");
+  }
+  const requested = new Set(requestedIds);
+  const seenSkills = new Set<string>();
+  const skillFilesById = new Map<string, Map<string, Buffer>>();
+  for (const skill of resolution.skills) {
+    if (!skill || typeof skill.id !== "string" || !requested.has(skill.id)) {
+      throw new Error(`Skill source resolver returned unrequested skill '${skill?.id ?? "<invalid>"}'.`);
+    }
+    if (seenSkills.has(skill.id)) throw new Error(`Skill source resolver returned duplicate skill '${skill.id}'.`);
+    seenSkills.add(skill.id);
+    if (!skill.files || typeof skill.files[Symbol.iterator] !== "function") {
+      throw new Error(`Skill source resolver did not provide a file map for '${skill.id}'.`);
+    }
+    const fileNames = new Set<string>();
+    const fileContents = new Map<string, Buffer>();
+    for (const entry of skill.files) {
+      if (!Array.isArray(entry) || entry.length !== 2) {
+        throw new Error(`Skill source resolver returned an invalid file map for '${skill.id}'.`);
+      }
+      const [relative, contents] = entry as [unknown, unknown];
+      if (typeof relative !== "string" || !relative || relative.includes("\\") || relative.includes("\0") ||
+        relative.startsWith("/") || /^[A-Za-z]:/u.test(relative) ||
+        relative.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
+        !Buffer.isBuffer(contents)) {
+        throw new Error(`Skill source resolver returned an unsafe file for '${skill.id}'.`);
+      }
+      if (fileNames.has(relative)) throw new Error(`Skill source resolver returned duplicate file '${relative}' for '${skill.id}'.`);
+      fileNames.add(relative);
+      fileContents.set(relative, contents);
+    }
+    if (!fileNames.has("SKILL.md") || !fileNames.has("SHERPA-SOURCE.json")) {
+      throw new Error(`Skill source resolver returned an incomplete file map for '${skill.id}'.`);
+    }
+    skillFilesById.set(skill.id, fileContents);
+  }
+  const missing = requestedIds.find((id) => !seenSkills.has(id));
+  if (missing) throw new Error(`Skill source resolver omitted selected skill '${missing}'.`);
+
+  const seenSourceSkills = new Set<string>();
+  for (const source of resolution.sources) {
+    if (!source || typeof source.namespace !== "string" || typeof source.repository !== "string" ||
+      typeof source.commit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/iu.test(source.commit) ||
+      typeof source.archiveSha256 !== "string" || !/^[a-f0-9]{64}$/iu.test(source.archiveSha256) ||
+      !Array.isArray(source.skills)) {
+      throw new Error("Skill source resolver returned invalid source provenance.");
+    }
+    for (const item of source.skills) {
+      if (!item || typeof item.id !== "string" || !requested.has(item.id) || seenSourceSkills.has(item.id) ||
+        typeof item.sourcePath !== "string" || !item.sourcePath || !item.licenseEvidence) {
+        throw new Error("Skill source resolver returned invalid selected-skill provenance.");
+      }
+      seenSourceSkills.add(item.id);
+      const evidence = item.licenseEvidence;
+      if (typeof evidence !== "object" || evidence === null) {
+        throw new Error(`Skill source resolver returned invalid license evidence for '${item.id}'.`);
+      }
+      if (evidence.kind === "file") {
+        if (typeof evidence.path !== "string" || !evidence.path || !/^[a-f0-9]{64}$/iu.test(evidence.sha256)) {
+          throw new Error(`Skill source resolver returned invalid license evidence for '${item.id}'.`);
+        }
+        const licenseBytes = skillFilesById.get(item.id)?.get("SHERPA-LICENSE.txt");
+        if (!licenseBytes || hash(licenseBytes) !== evidence.sha256) {
+          throw new Error(`Skill source resolver returned missing or mismatched license bytes for '${item.id}'.`);
+        }
+      } else if (evidence.kind !== "declared" || typeof evidence.identifier !== "string" || !evidence.identifier) {
+        throw new Error(`Skill source resolver returned invalid license evidence for '${item.id}'.`);
+      }
+    }
+  }
+  if (seenSourceSkills.size !== requested.size) throw new Error("Skill source resolver returned incomplete selected-skill provenance.");
+}
+
+function skillSourceMessages(resolution: SherpaSkillResolution): string[] {
+  const messages: string[] = [];
+  for (const source of resolution.sources) {
+    for (const skill of source.skills) {
+      const license = skill.licenseEvidence.kind === "file"
+        ? `file ${skill.licenseEvidence.path} (${skill.licenseEvidence.sha256})`
+        : `declared ${skill.licenseEvidence.identifier}`;
+      messages.push(`Skill source ${skill.id}: ${source.repository}@${source.commit}/${skill.sourcePath}; license ${license}`);
+    }
+  }
+  return messages.sort();
+}
+
+function assertSkillResolutionSucceeded(resolution: SherpaSkillResolution): void {
+  if (!resolution || !Array.isArray(resolution.diagnostics)) {
+    throw new Error("Skill source resolver returned an invalid result.");
+  }
+  if (resolution.diagnostics.length === 0) return;
+  const details = resolution.diagnostics
+    .map(({ namespace, code, message, skillId, sourcePath }) =>
+      `- ${namespace} (${code})${skillId ? ` ${skillId}` : ""}${sourcePath ? ` ${sourcePath}` : ""}: ${message}`)
+    .join("\n");
+  throw new Error(`Skill source resolution failed; project files were not changed.\n${details}`);
+}
+
 export async function syncProject(
   options: SyncOptions,
   dependencies: SyncDependencies = {},
@@ -406,24 +524,41 @@ export async function syncProject(
   if (!projectStat?.isDirectory()) throw new Error(`OpenCode project path is not a directory: ${projectDirectory}`);
   const settings = loadProjectSettings(projectDirectory);
   const sources = configuredSherpaAgentSources(settings.agentSources);
+  const skillSources = configuredSherpaSkillSources(settings.skillSources);
   const detectionOptions = configuredProjectDetection(settings.detection === undefined ? {} : settings.detection);
   const agentSelection = configuredContentSelection(settings.agents);
   const commandSelection = configuredContentSelection(settings.commands);
   const instructionSelection = configuredContentSelection(settings.instructions);
   const skillSelection = configuredContentSelection(settings.skills);
+  const tuning = loadSherpaTuning(options.packageRoot ?? dependencies.packageRoot ?? PACKAGE_ROOT);
   const detection = detectProject(projectDirectory, detectionOptions);
+  const declaredIds = declaredSkillIds(skillSources);
+  const availableSkillIds = [...tuning.skills.map(({ id }) => id), ...declaredIds];
+  const selectedSkillIds = selectProjectSkillIds(detection, availableSkillIds, skillSelection);
+  const declaredIdSet = new Set(declaredIds);
+  const selectedExternalSkillIds = selectedSkillIds.filter((id) => declaredIdSet.has(id));
   const dryRun = options.dryRun === true;
-  const resolver = dependencies.resolveSources ?? resolveSherpaAgentSources;
+  const agentResolver = dependencies.resolveSources ?? resolveSherpaAgentSources;
+  const skillResolver = dependencies.resolveSkillSources ?? resolveSherpaSkillSources;
   let temporaryCache: string | undefined;
   let resolution: SherpaAgentResolution;
+  let skillResolution: SherpaSkillResolution = { skills: [], sources: [], diagnostics: [] };
   try {
-    const resolutionOptions = dryRun && sources.length > 0
+    const resolutionOptions = dryRun && (sources.length > 0 || selectedExternalSkillIds.length > 0)
       ? (() => {
           temporaryCache = mkdtempSync(path.join(os.tmpdir(), "opencode-sherpa-dry-run-"));
           return { cacheDirectory: temporaryCache };
         })()
       : undefined;
-    resolution = await resolver(sources, resolutionOptions);
+    if (selectedExternalSkillIds.length > 0) {
+      skillResolution = await skillResolver(skillSources, {
+        ...resolutionOptions,
+        skillIds: selectedExternalSkillIds,
+      });
+      assertSkillResolutionSucceeded(skillResolution);
+      validateExternalSkillResolution(skillResolution, selectedExternalSkillIds);
+    }
+    resolution = await agentResolver(sources, resolutionOptions);
   } finally {
     if (temporaryCache) rmSync(temporaryCache, { recursive: true, force: true });
   }
@@ -434,16 +569,30 @@ export async function syncProject(
     throw new Error(`Agent source resolution failed; project files were not changed.\n${details}`);
   }
 
-  const tuning = loadSherpaTuning(options.packageRoot ?? dependencies.packageRoot ?? PACKAGE_ROOT);
-  const selection = selectProjectContent(detection, resolution.agents, tuning, {
+  const mergedTuning: SherpaTuning = {
+    ...tuning,
+    skills: [...tuning.skills, ...skillResolution.skills],
+  };
+  const mergedSkillIds = new Set(mergedTuning.skills.map(({ id }) => id));
+  const finalSkillSelection = {
+    ...skillSelection,
+    include: skillSelection.include.filter((id) => mergedSkillIds.has(id)),
+    exclude: skillSelection.exclude.filter((id) => mergedSkillIds.has(id)),
+  };
+  const selection = selectProjectContent(detection, resolution.agents, mergedTuning, {
     agents: agentSelection,
     commands: commandSelection,
     instructions: instructionSelection,
-    skills: skillSelection,
+    skills: finalSkillSelection,
   });
+  const finalSkillIds = selection.skills.map(({ id }) => id).sort();
+  if (finalSkillIds.length !== selectedSkillIds.length ||
+    finalSkillIds.some((id, index) => id !== selectedSkillIds[index])) {
+    throw new Error("Selected skill IDs changed during resolution; project files were not changed.");
+  }
   const filteredResolution: SherpaAgentResolution = { ...resolution, agents: selection.agents };
   const filteredTuning: SherpaTuning = {
-    ...tuning,
+    ...mergedTuning,
     commands: selection.commands,
     instructions: selection.instructions,
     skills: selection.skills,
@@ -453,6 +602,7 @@ export async function syncProject(
   const omoResult = reconcileSherpaOmoAgents(filteredResolution, { projectDirectory, dryRun: true });
   const messages = [
     ...printSelection(detection, selection),
+    ...skillSourceMessages(skillResolution),
     ...printActions(projectDirectory, artifactPlan, mcpWrite, omoResult.changedPaths, dryRun),
   ];
 

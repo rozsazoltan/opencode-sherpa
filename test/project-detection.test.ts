@@ -102,6 +102,48 @@ test("ignores inherited dependency feature mappings", () => {
   }
 });
 
+test("detects pnpm only from a versioned packageManager field and maps modern Vue tooling", () => {
+  const source = fixture();
+  try {
+    source.write("package.json", JSON.stringify({
+      packageManager: "pnpm@9.12.0",
+      dependencies: {
+        "@pinia/nuxt": "^0.9",
+        "@unocss/vite": "^0.6",
+        pinia: "^2",
+        vitepress: "^1",
+      },
+    }));
+    expect(detectProject(source.root).features).toEqual(["pinia", "pnpm", "unocss", "vitepress"]);
+
+    for (const packageManager of ["pnpm@", "pnpm@   ", "npm@10.0.0", "bun@1.0.0"]) {
+      source.write("package.json", JSON.stringify({ packageManager }));
+      expect(detectProject(source.root).features).toEqual([]);
+    }
+  } finally {
+    source.dispose();
+  }
+});
+
+test("detects Fortify and Wayfinder only from Laravel Composer dependencies", () => {
+  const source = fixture();
+  try {
+    source.write("composer.json", JSON.stringify({
+      require: { "laravel/framework": "^11" },
+    }));
+    source.write("package.json", JSON.stringify({ dependencies: { react: "^19", vue: "^3" } }));
+    expect(detectProject(source.root).features).toEqual(["laravel", "react", "vue"]);
+
+    source.write("composer.json", JSON.stringify({
+      require: { "laravel/framework": "^11", "laravel/fortify": "^1" },
+      "require-dev": { "laravel/wayfinder": "^0.1" },
+    }));
+    expect(detectProject(source.root).features).toEqual(["fortify", "laravel", "react", "vue", "wayfinder"]);
+  } finally {
+    source.dispose();
+  }
+});
+
 test("supports pnpm .yml and explicit relative glob paths, while excluding generated trees", () => {
   const source = fixture();
   try {

@@ -18,11 +18,19 @@ export const PROJECT_AGENT_CATALOG: readonly ProjectContentRule[] = [
 ];
 
 export const PROJECT_SKILL_CATALOG: readonly ProjectContentRule[] = [
-  { id: "sherpa-php-development", stacks: ["php"] },
-  { id: "sherpa-js-development", stacks: ["js"] },
-  { id: "sherpa-rust-development", stacks: ["rust"] },
-  { id: "sherpa-laravel-development", features: ["laravel"] },
-  { id: "sherpa-vue-development", features: ["vue"] },
+  { id: "sherpa-asyraf-php-best-practices", stacks: ["php"] },
+  { id: "sherpa-leonardomso-rust-skills", stacks: ["rust"] },
+  { id: "sherpa-nuno-laravel-best-practices", features: ["laravel"] },
+  { id: "sherpa-nuno-fortify-development", features: ["fortify"] },
+  { id: "sherpa-nuno-wayfinder-development", features: ["wayfinder"] },
+  { id: "sherpa-antfu-pnpm", features: ["pnpm"] },
+  { id: "sherpa-antfu-vite", features: ["vite"] },
+  { id: "sherpa-antfu-vitest", features: ["vitest"] },
+  { id: "sherpa-antfu-vue", features: ["vue"] },
+  { id: "sherpa-antfu-nuxt", features: ["nuxt"] },
+  { id: "sherpa-antfu-pinia", features: ["pinia"] },
+  { id: "sherpa-antfu-unocss", features: ["unocss"] },
+  { id: "sherpa-antfu-vitepress", features: ["vitepress"] },
 ];
 
 export const PROJECT_COMMAND_CATALOG: readonly ProjectContentRule[] = [

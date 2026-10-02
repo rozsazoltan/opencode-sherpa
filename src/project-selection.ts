@@ -113,6 +113,11 @@ function matchingReasons(rule: ProjectContentRule, detection: ProjectDetection):
   return reasons;
 }
 
+function skillMatchingReasons(id: string, detection: ProjectDetection): string[] {
+  const rule = PROJECT_SKILL_CATALOG.find((candidate) => candidate.id === id);
+  return rule ? matchingReasons(rule, detection) : [];
+}
+
 type ContentKind = ProjectContentReason["kind"];
 
 function validateKnownIds(kind: ContentKind, ids: readonly string[], known: ReadonlySet<string>): void {
@@ -179,9 +184,6 @@ export function selectProjectContent(
   const agentRules = new Map<string, ProjectContentRule>(
     PROJECT_AGENT_CATALOG.map((rule) => [rule.id, rule] as const),
   );
-  const skillRules = new Map<string, ProjectContentRule>(
-    PROJECT_SKILL_CATALOG.map((rule) => [rule.id, rule] as const),
-  );
   const commandRules = new Map<string, ProjectContentRule>(
     PROJECT_COMMAND_CATALOG.map((rule) => [rule.id, rule] as const),
   );
@@ -201,10 +203,8 @@ export function selectProjectContent(
     const rule = instructionRules.get(instruction.id);
     return rule ? matchingReasons(rule, detection) : [];
   });
-  const selectedSkills = selectItems("skill", tuning.skills, ({ id }) => id, skillSelection, (skill) => {
-    const rule = skillRules.get(skill.id);
-    return rule ? matchingReasons(rule, detection) : [];
-  });
+  const selectedSkills = selectItems("skill", tuning.skills, ({ id }) => id, skillSelection, (skill) =>
+    skillMatchingReasons(skill.id, detection));
 
   return {
     agents: selectedAgents.items.sort((left, right) => lexicalCompare(left.id, right.id)),
@@ -219,4 +219,20 @@ export function selectProjectContent(
     ].sort((left, right) =>
       lexicalCompare(left.kind, right.kind) || lexicalCompare(left.id, right.id) || lexicalCompare(left.reason, right.reason)),
   };
+}
+
+/** Select skill IDs from available sources using configured `skills` selection. */
+export function selectProjectSkillIds(
+  detection: ProjectDetection,
+  availableIds: readonly string[],
+  options?: unknown,
+): string[] {
+  const selection = configuredContentSelection(options);
+  return selectItems(
+    "skill",
+    availableIds,
+    (id) => id,
+    selection,
+    (id) => skillMatchingReasons(id, detection),
+  ).items.sort(lexicalCompare);
 }

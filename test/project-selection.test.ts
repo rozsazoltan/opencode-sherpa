@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { SherpaOmoAgent } from "../src/agent-sources.ts";
-import { configuredContentSelection, selectProjectContent } from "../src/project-selection.ts";
+import { detectProject } from "../src/project-detection.ts";
+import { configuredContentSelection, selectProjectContent, selectProjectSkillIds } from "../src/project-selection.ts";
 import type { PackagedCommand, PackagedInstruction, PackagedSkill, SherpaTuning } from "../src/tuning.ts";
 import { loadSherpaTuning } from "../src/tuning.ts";
 
@@ -70,7 +71,7 @@ test("content selection defaults to automatic discovery and validates strict con
   }
 });
 
-test("auto-selects curated agent basenames and stack/feature skills across source namespaces", () => {
+test("auto-selects curated agent basenames but keeps original Sherpa skills explicit-only", () => {
   const result = selectProjectContent(
     { stacks: ["php", "js", "rust"], features: ["laravel", "typescript", "vue", "react"] },
     curatedAgents,
@@ -86,15 +87,122 @@ test("auto-selects curated agent basenames and stack/feature skills across sourc
     "sherpa-fixture-typescript-pro",
     "sherpa-fixture-vue-expert",
   ]);
-  expect(result.skills.map(({ id }) => id)).toEqual([
-    "sherpa-js-development",
-    "sherpa-laravel-development",
-    "sherpa-php-development",
-    "sherpa-rust-development",
-    "sherpa-vue-development",
-  ]);
-  expect(result.reasons).toHaveLength(12);
+  expect(result.skills).toEqual([]);
+  expect(result.reasons).toHaveLength(7);
   expect(result.reasons.every(({ reason }) => reason.startsWith("Matched detected "))).toBe(true);
+});
+
+const upstreamSkillIds = [
+  "sherpa-asyraf-php-best-practices",
+  "sherpa-leonardomso-rust-skills",
+  "sherpa-nuno-laravel-best-practices",
+  "sherpa-nuno-fortify-development",
+  "sherpa-nuno-wayfinder-development",
+  "sherpa-antfu-pnpm",
+  "sherpa-antfu-vite",
+  "sherpa-antfu-vitest",
+  "sherpa-antfu-vue",
+  "sherpa-antfu-nuxt",
+  "sherpa-antfu-pinia",
+  "sherpa-antfu-unocss",
+  "sherpa-antfu-vitepress",
+];
+
+test("auto-selects only available upstream skills matched by stack and exact features", () => {
+  const cases = [
+    [{ stacks: ["php"], features: [] }, "sherpa-asyraf-php-best-practices"],
+    [{ stacks: ["rust"], features: [] }, "sherpa-leonardomso-rust-skills"],
+    [{ stacks: [], features: ["laravel"] }, "sherpa-nuno-laravel-best-practices"],
+    [{ stacks: [], features: ["fortify"] }, "sherpa-nuno-fortify-development"],
+    [{ stacks: [], features: ["wayfinder"] }, "sherpa-nuno-wayfinder-development"],
+    [{ stacks: [], features: ["pnpm"] }, "sherpa-antfu-pnpm"],
+    [{ stacks: [], features: ["vite"] }, "sherpa-antfu-vite"],
+    [{ stacks: [], features: ["vitest"] }, "sherpa-antfu-vitest"],
+    [{ stacks: [], features: ["vue"] }, "sherpa-antfu-vue"],
+    [{ stacks: [], features: ["nuxt"] }, "sherpa-antfu-nuxt"],
+    [{ stacks: [], features: ["pinia"] }, "sherpa-antfu-pinia"],
+    [{ stacks: [], features: ["unocss"] }, "sherpa-antfu-unocss"],
+    [{ stacks: [], features: ["vitepress"] }, "sherpa-antfu-vitepress"],
+  ] as const;
+
+  for (const [detection, expected] of cases) {
+    expect(selectProjectSkillIds(detection, upstreamSkillIds)).toEqual([expected]);
+  }
+  expect(selectProjectSkillIds({ stacks: ["php"], features: [] }, ["sherpa-antfu-vite"])).toEqual([]);
+  expect(selectProjectSkillIds({ stacks: ["php"], features: [] }, [])).toEqual([]);
+});
+
+test("keeps optional upstream and original Sherpa skills manual-only", () => {
+  const optionalIds = [
+    "sherpa-antfu-antfu",
+    "sherpa-antfu-antfu-create-pr",
+    "sherpa-superpowers-test-driven-development",
+    "sherpa-superpowers-systematic-debugging",
+    "sherpa-superpowers-verification-before-completion",
+    "sherpa-superpowers-brainstorming",
+  ];
+  const available = [...optionalIds, ...curatedSkills.map(({ id }) => id)];
+  const detection = { stacks: ["php", "js", "rust"] as const, features: ["laravel", "vue"] };
+
+  expect(selectProjectSkillIds(detection, available)).toEqual([]);
+  expect(selectProjectSkillIds(detection, available, { include: ["sherpa-php-development"] }))
+    .toEqual(["sherpa-php-development"]);
+  expect(selectProjectSkillIds(detection, available, { include: ["sherpa-antfu-antfu"] }))
+    .toEqual(["sherpa-antfu-antfu"]);
+  expect(selectProjectSkillIds(detection, optionalIds)).toEqual([]);
+
+  const emptyDetection = { stacks: [], features: [] };
+  expect(selectProjectSkillIds(emptyDetection, available)).toEqual([]);
+  expect(selectProjectSkillIds(emptyDetection, available, { auto: false, include: ["sherpa-issue-writing"] }))
+    .toEqual(["sherpa-issue-writing"]);
+
+  const disabledDetection = detectProject("/not/a/project", { enabled: false });
+  expect(selectProjectSkillIds(disabledDetection, available)).toEqual([]);
+  expect(selectProjectSkillIds(disabledDetection, available, { include: ["sherpa-issue-writing"] }))
+    .toEqual(["sherpa-issue-writing"]);
+});
+
+test("shares strict skill selection rules with resolved packaged content", () => {
+  const detection = { stacks: ["php"] as const, features: ["laravel"] };
+  const available = ["sherpa-php-development", "sherpa-nuno-laravel-best-practices", "optional-skill"];
+  const options = {
+    include: ["optional-skill", "sherpa-php-development"],
+    exclude: ["sherpa-php-development", "sherpa-nuno-laravel-best-practices"],
+  };
+  const resolved = selectProjectContent(
+    detection,
+    [],
+    tuning(available.map(skill)),
+    { skills: options },
+  ).skills.map(({ id }) => id);
+
+  expect(selectProjectSkillIds(detection, available, options)).toEqual(resolved);
+  expect(resolved).toEqual(["optional-skill"]);
+  expect(() => selectProjectSkillIds(detection, [], { include: ["sherpa-missing"] })).toThrow("Unknown skill ID");
+  expect(() => selectProjectSkillIds(detection, [], { exclude: ["sherpa-missing"] })).toThrow("Unknown skill ID");
+  expect(() => selectProjectContent(detection, [], tuning([]), { skills: { include: ["sherpa-missing"] } }))
+    .toThrow("Unknown skill ID");
+  expect(() => selectProjectContent(detection, [], tuning([]), { skills: { exclude: ["sherpa-missing"] } }))
+    .toThrow("Unknown skill ID");
+  expect(() => selectProjectSkillIds(detection, ["same", "same"])).toThrow("Duplicate skill ID");
+  expect(() => selectProjectContent(detection, [], tuning([skill("same"), skill("same")]))).toThrow("Duplicate skill ID");
+  expect(() => selectProjectSkillIds(detection, ["same"], { include: ["same", "same"] })).toThrow("duplicate ID");
+  expect(() => selectProjectSkillIds(detection, ["same"], { unknown: true })).toThrow("Unsupported content selection field");
+});
+
+test("skill selection ordering does not depend on available source ordering", () => {
+  const detection = { stacks: ["php", "rust"] as const, features: ["laravel", "vite"] };
+  const available = [...upstreamSkillIds].reverse();
+  const first = selectProjectSkillIds(detection, available);
+  const second = selectProjectSkillIds(detection, [...available].reverse());
+
+  expect(first).toEqual(second);
+  expect(first).toEqual([
+    "sherpa-asyraf-php-best-practices",
+    "sherpa-antfu-vite",
+    "sherpa-leonardomso-rust-skills",
+    "sherpa-nuno-laravel-best-practices",
+  ].sort());
 });
 
 test("explicit includes allow extras and auto-off while exclusions always win", () => {

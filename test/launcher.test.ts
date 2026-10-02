@@ -64,7 +64,7 @@ function run(executable: string, launcherPath: string, args: readonly string[], 
 
 function projectSettings(fixture: ReturnType<typeof createFixture>): void {
   mkdirSync(fixture.projectRoot, { recursive: true });
-  fixture.write("project/opencode-sherpa.json", '{"agentSources":[]}\n');
+  fixture.write("project/opencode-sherpa.json", '{"agentSources":[],"skillSources":[]}\n');
 }
 
 test("Node and Bun launch packaged TypeScript CLI and preserve CLI status codes", () => {

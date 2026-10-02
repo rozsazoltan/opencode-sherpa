@@ -33,7 +33,7 @@ Run `sync` again after changing Sherpa's package version, project configuration,
 
 ## Project configuration
 
-Create `opencode-sherpa.jsonc` in the repository root. A `.json` file is also accepted, but Sherpa refuses to choose if both exist. Supported settings are `detection`, `agents`, `skills`, `commands`, `instructions`, `agentSources`, `mcp`, and `language`.
+Create `opencode-sherpa.jsonc` in the repository root. A `.json` file is also accepted, but Sherpa refuses to choose if both exist. Supported settings are `detection`, `agents`, `skills`, `commands`, `instructions`, `agentSources`, `skillSources`, `mcp`, and `language`.
 
 ```jsonc
 {
@@ -82,13 +82,65 @@ Set `detection.enabled` to `false` to disable discovery. Explicit content includ
 
 Automatic agents are curated roles matched against discovered source prompts: PHP Pro, JavaScript Pro, Rust Engineer, and detected TypeScript, Laravel, Vue, or React specialists. Other roles remain optional. Agent IDs retain their source namespace; custom repositories can supply the same roles without hardcoded agent IDs.
 
-Automatic skills are original Sherpa coding playbooks: `sherpa-php-development`, `sherpa-js-development`, `sherpa-rust-development`, plus `sherpa-laravel-development` and `sherpa-vue-development` when those frameworks are detected. The issue/PR-writing skills are optional and never enabled automatically. These are bundled guidance, not copies of third-party skill collections or installs of the tools they describe.
+The seven original Sherpa skills remain bundled and available only through explicit `skills.include`: `sherpa-php-development`, `sherpa-js-development`, `sherpa-rust-development`, `sherpa-laravel-development`, `sherpa-vue-development`, `sherpa-issue-writing`, and `sherpa-pr-writing`. They are not automatically layered over the curated upstream skills below. Issue/PR-writing skills remain opt-in.
+
+### External skills
+
+`skillSources` configures pinned upstream skill catalogs. It is separate from `agentSources`; OMO-Slim agent sourcing remains unchanged. Omitting `skillSources` enables Sherpa's curated catalog, pinned to immutable upstream commits:
+
+| Namespace | Repository | Automatic selection |
+| --- | --- | --- |
+| `superpowers` | [`obra/superpowers`](https://github.com/obra/superpowers) | None. Four optional workflow skills: test-driven-development, systematic-debugging, verification-before-completion, and brainstorming. |
+| `antfu` | [`antfu/skills`](https://github.com/antfu/skills) | `pnpm` when `packageManager` declares `pnpm@`; `vite`, `vitest`, `vue`, `nuxt`, `pinia`, `unocss`, and `vitepress` when matching manifest dependencies are detected. |
+| `nuno` | [`nunomaduro/laravel-starter-kit-inertia-vue`](https://github.com/nunomaduro/laravel-starter-kit-inertia-vue) | Laravel best practices for Laravel projects; Fortify guidance only with `laravel/fortify`; Wayfinder guidance only with `laravel/wayfinder`. |
+| `asyraf` | [`AsyrafHussin/agent-skills`](https://github.com/AsyrafHussin/agent-skills) | PHP best practices for detected PHP projects. |
+| `leonardomso` | [`leonardomso/rust-skills`](https://github.com/leonardomso/rust-skills) | Rust skills for detected Rust projects. |
+| `mattpocock` | [`mattpocock/skills`](https://github.com/mattpocock/skills) | None. Optional diagnosing-bugs, codebase-design, and writing-for-agents skills. |
+
+The `sherpa-antfu-antfu` and `sherpa-antfu-antfu-create-pr` skills are also optional; they contain opinionated policies. Preserve their upstream credits when adapting them. Superpowers prescribes test-first, specification approval, and companion workflows; enable those skills only when those practices fit. Nuno's Fortify and Wayfinder skills do not auto-select from PHP, Vue, React, or Inertia alone. Its Laravel best-practices entry is one canonical skill with its complete rule folder, not duplicate framework copies. No generic JavaScript or TypeScript rule selects a workflow skill. Sherpa uses selected raw skills, not `antfu/skills-pack`'s generator or its third-party catalog.
+
+`skills.auto` defaults to `true`, but only skills with curated matching rules are selected automatically. The original seven Sherpa skills and other uncataloged skills require explicit inclusion. `skills.include` and `skills.exclude` accept IDs from bundled skills and declared upstream entries. Exclusions win. Unknown IDs fail before upstream fetch. Setting `skills.auto` to `false` disables automatic skill selection but keeps explicit includes.
+
+Use `skillSources` as an array to replace the built-in catalog. An empty array disables all external sources; it does not enable automatic fallback to the original Sherpa skills. Explicit includes for those bundled skills still work. The object form appends custom sources by default; set `includeDefaults` to `false` to replace the built-ins:
+
+```jsonc
+{
+  "skillSources": {
+    "includeDefaults": true,
+    "sources": [
+      {
+        "namespace": "team",
+        "repository": "example/skills",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "licensePath": "LICENSE",
+        "skills": [
+          {
+            "id": "release-review",
+            "path": "skills/release-review/SKILL.md",
+            "supportPaths": ["references"]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Each source requires `namespace`, `repository`, a full immutable `commit` SHA, and one or more `skills`. Specify exactly one source license field: `licensePath` for an actual file in the pinned repository, or `license` for a declared identifier that must match each selected skill's frontmatter. Each skill entry accepts only `id`, exact repository-relative `path`, and optional `supportPaths`. Unknown fields, duplicate namespaces or IDs, mutable refs, globs, absolute paths, traversal segments, and backslashes are rejected. `path` must end in `SKILL.md`. Nested skills copy their containing folder by default; `supportPaths` narrows additional files or directories relative to that skill folder. A root-level `SKILL.md` requires explicit `supportPaths`, including `[]` when it has no supporting files.
+
+Imported IDs use `sherpa-<namespace>-<id>` and remain stable across upstream commit updates. Sherpa preserves the original `SKILL.md` bytes and frontmatter; OpenCode v2 uses frontmatter `name` as the display label. Sherpa fetches only pinned repositories needed by selected skills. It resolves sources through the same integrity-checked archive cache used for agent sources, under `~/.cache/opencode/.sherpa/agent-sources/` or `$XDG_CACHE_HOME/opencode/.sherpa/agent-sources/`. A dry run can fetch over the network, but uses a temporary cache and does not write project files. Source, skill, license, and metadata diagnostics stop sync before project writes.
+
+Skill archives may contain safe relative symlink aliases outside selected skills, support paths, and license files. Sherpa records those aliases in the cache but never extracts or follows them. Links affecting selected content, unsafe paths or targets, hardlinks, and special entries are rejected. Agent-source archives retain strict symlink rejection.
+
+Each imported skill includes deterministic `SHERPA-SOURCE.json` provenance with repository, commit, source path, archive hash, file hashes, and license evidence. Sherpa copies a real pinned license file in full as `SHERPA-LICENSE.txt` when `licensePath` is configured. The Superpowers, Antfu, Asyraf, Leonardomso, and Matt Pocock pins provide MIT license files. Otherwise, provenance records only the declared license identifier; Sherpa does not invent license text or copyright statements. At the built-in Nuno pin, the repository has no root license file; its skill metadata declares MIT and credits Laravel as author. Nuno Maduro distributes those skills; do not attribute their authorship to Nuno. Sherpa's AGPL license covers Sherpa code, not upstream skills; review each upstream license and preserve its notices.
+
+Upstream instructions are not guarantees about the current project or available tools. Antfu references include Vite 8.3.1, Vitest 5.0.1, and pnpm 11/12; verify guidance against local versions. The Nuno Laravel skills include assumptions about the Laravel `search-docs` tool, always using subagents, `Cache::flexible`, and concurrency features; check local Laravel versions and agent tools. Asyraf's PHP 8.0–8.5 guide is community guidance, not official PHP documentation. Leonardomso's guide targets Rust 1.96 and edition 2024; it does not install or upgrade Rust. Copied support scripts and metadata remain inert; syncing does not install tools or provide upstream runtime capabilities.
 
 Automatic commands are `sherpa-js-check`, `sherpa-php-check`, and `sherpa-rust-check`, selected for their detected stacks. They ask the agent to inspect project tooling and run relevant configured checks, not install tools or assume a fixed test command. Invoke a selected command with, for example, `/sherpa-js-check <task>`. The `sherpa-write-issue` and `sherpa-write-pr` commands are opt-in drafting helpers. Selecting a command does not implicitly enable its related skill.
 
 Bundled instruction selection follows the same stack rules: `10-js-development`, `20-php-development`, and `30-rust-development`. The common `00-sherpa-principles` instruction is selected by default for every project. Selected instruction bodies are combined into Sherpa's marked block in root `AGENTS.md`; they do not create separate project instruction files.
 
-All four content settings—`agents`, `skills`, `commands`, and `instructions`—accept `auto`, `include`, and `exclude`. Automatic selection defaults to on, while explicit extras default to empty. Set `auto` to `false` for a manual-only list. `include` adds available IDs, and `exclude` wins over both automatic selection and inclusion. Unknown IDs are errors, not ignored requests. Agent IDs must exist in configured sources; other IDs must exist in the installed package's tuning content. Command and instruction IDs are relative paths without `.md`, such as `git/status` or `00-sherpa-principles`.
+All four content settings—`agents`, `skills`, `commands`, and `instructions`—accept `auto`, `include`, and `exclude`. Automatic selection defaults to on, while explicit extras default to empty. Set `auto` to `false` for a manual-only list. `include` adds available IDs, and `exclude` wins over both automatic selection and inclusion. Unknown IDs are errors, not ignored requests. Agent IDs must exist in configured sources; skill IDs must exist in bundled tuning or the active skill-source catalog; commands and instructions must exist in installed tuning content. Command and instruction IDs are relative paths without `.md`, such as `git/status` or `00-sherpa-principles`.
 
 For example, keep only the common bundled instruction:
 
@@ -160,11 +212,11 @@ Existing servers are never replaced. GitHub uses OpenCode-managed OAuth by defau
 ## Materialized project files
 
 - Root `AGENTS.md`: base rules and selected instructions inside Sherpa's managed block; surrounding user content is preserved.
-- `.opencode/skills/`: selected packaged skills and their support files.
+- `.opencode/skills/`: selected packaged or pinned upstream skills, support files, source provenance, and available upstream license notices.
 - `.opencode/commands/`: selected packaged Markdown prompt templates.
 - `opencode.json(c)`: missing project MCP entries under `mcp.servers` only.
 - `.opencode/oh-my-opencode-slim*`: source-derived project agents, when OMO-Slim is used.
-- `.opencode/.sherpa-files.json`: ownership hashes for managed packaged skill/command files.
+- `.opencode/.sherpa-files.json`: ownership hashes for managed skill and command files, including imported support files and notices.
 
 Tuning content is discovered recursively from the installed package's `tuning/` directory. Discovery does not require a hardcoded file list; curated automatic selection rules are separate:
 
@@ -175,7 +227,7 @@ tuning/
 └── commands/**/*.md
 ```
 
-Instruction Markdown IDs come from relative paths without `.md`; selected bodies are combined in deterministic path order and written inside Sherpa's marked block in `AGENTS.md`. A skill requires YAML frontmatter `description`; use its directory ID as the frontmatter `name`. Supporting files beside `SKILL.md` are copied with it. Uncataloged bundled skills are optional and require an explicit include. Command names come from relative paths (`git/status.md` becomes `/git/status`). Commands are prompt templates, not shell scripts; `$ARGUMENTS` is replaced with entered text. If the placeholder is absent, arguments are appended to the prompt.
+Instruction Markdown IDs come from relative paths without `.md`; selected bodies are combined in deterministic path order and written inside Sherpa's marked block in `AGENTS.md`. A bundled skill requires YAML frontmatter `description`; use its directory ID as the frontmatter `name` when authoring Sherpa content. Imported skills retain their original frontmatter and use the namespaced directory ID. Supporting files beside `SKILL.md` are copied with it unless the source descriptor narrows them with `supportPaths`. Uncataloged bundled skills are optional and require an explicit include. Command names come from relative paths (`git/status.md` becomes `/git/status`). Commands are prompt templates, not shell scripts; `$ARGUMENTS` is replaced with entered text. If the placeholder is absent, arguments are appended to the prompt.
 
 Sherpa does not enforce runtime permissions. The former permission hook is removed; OpenCode's configured permission rules remain responsible for access control.
 

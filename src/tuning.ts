@@ -10,6 +10,15 @@ export interface PackagedSkill {
   readonly autoinvoke?: boolean;
   readonly path: string;
   readonly content: string;
+  readonly files?: ReadonlyMap<string, Buffer>;
+}
+
+export interface ParsedSkillDocument {
+  readonly name: string;
+  readonly description: string;
+  readonly autoinvoke?: boolean;
+  readonly license?: string;
+  readonly content: string;
 }
 
 export interface PackagedCommand {
@@ -75,8 +84,11 @@ function validatedRelativeName(root: string, target: string): string {
   return relative;
 }
 
-function readDocument(file: string, frontmatterRequired = true): { metadata: Record<string, unknown>; body: string } {
-  const source = readFileSync(file, "utf8").replace(/^\uFEFF/u, "");
+function parseDocument(sourceText: string, file: string, frontmatterRequired = true): {
+  metadata: Record<string, unknown>;
+  body: string;
+} {
+  const source = sourceText.replace(/^\uFEFF/u, "");
   const match = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/u.exec(source);
   if (!match) {
     if (/^---[ \t]*(?:\r?\n|$)/u.test(source)) {
@@ -101,6 +113,10 @@ function readDocument(file: string, frontmatterRequired = true): { metadata: Rec
   return { metadata: parsed, body };
 }
 
+function readDocument(file: string, frontmatterRequired = true): { metadata: Record<string, unknown>; body: string } {
+  return parseDocument(readFileSync(file, "utf8"), file, frontmatterRequired);
+}
+
 function optionalString(metadata: Record<string, unknown>, key: string, file: string): string | undefined {
   const value = metadata[key];
   if (value === undefined) return undefined;
@@ -115,38 +131,51 @@ function assertAllowedKeys(metadata: Record<string, unknown>, allowed: readonly 
   if (unsupported) throw new Error(`Unsupported frontmatter field '${unsupported}': ${file}`);
 }
 
+export function parseSkillDocument(source: string, id: string, file: string): ParsedSkillDocument {
+  const { metadata, body } = parseDocument(source, file);
+  assertAllowedKeys(metadata, ["name", "description", "autoinvoke", "metadata", "license", "compatibility"], file);
+  const description = optionalString(metadata, "description", file);
+  if (!description) throw new Error(`Skills require a description in frontmatter: ${file}`);
+
+  const displayName = optionalString(metadata, "name", file) ?? id;
+  const metadataValue = metadata.metadata;
+  const metadataRecord = metadataValue === undefined ? {} : metadataValue;
+  if (!isRecord(metadataRecord)) throw new Error(`Skill metadata must be an object: ${file}`);
+  const autoinvokeValue = metadata.autoinvoke ?? metadataRecord["opencode/autoinvoke"];
+  const autoinvoke = autoinvokeValue === "true"
+    ? true
+    : autoinvokeValue === "false"
+      ? false
+      : autoinvokeValue;
+  if (autoinvoke !== undefined && typeof autoinvoke !== "boolean") {
+    throw new Error(`Skill autoinvoke must be a boolean: ${file}`);
+  }
+  const license = typeof metadata.license === "string" ? metadata.license : undefined;
+
+  return {
+    name: displayName,
+    description,
+    ...(autoinvoke === undefined ? {} : { autoinvoke }),
+    ...(license === undefined ? {} : { license }),
+    content: body,
+  };
+}
+
 function readSkills(directory: string): PackagedSkill[] {
   return markdownFiles(directory)
     .filter((file) => path.basename(file) === "SKILL.md")
     .map((file) => {
-      const { metadata, body } = readDocument(file);
-      assertAllowedKeys(metadata, ["name", "description", "autoinvoke", "metadata", "license", "compatibility"], file);
-      const description = optionalString(metadata, "description", file);
-      if (!description) throw new Error(`Skills require a description in frontmatter: ${file}`);
-
       const skillDirectory = path.dirname(file);
       const id = validatedRelativeName(directory, skillDirectory);
-      const displayName = optionalString(metadata, "name", file) ?? id;
-      const metadataValue = metadata.metadata;
-      const metadataRecord = metadataValue === undefined ? {} : metadataValue;
-      if (!isRecord(metadataRecord)) throw new Error(`Skill metadata must be an object: ${file}`);
-      const autoinvokeValue = metadata.autoinvoke ?? metadataRecord["opencode/autoinvoke"];
-      const autoinvoke = autoinvokeValue === "true"
-        ? true
-        : autoinvokeValue === "false"
-          ? false
-          : autoinvokeValue;
-      if (autoinvoke !== undefined && typeof autoinvoke !== "boolean") {
-        throw new Error(`Skill autoinvoke must be a boolean: ${file}`);
-      }
+      const parsed = parseSkillDocument(readFileSync(file, "utf8"), id, file);
 
       return {
         id,
-        name: displayName,
-        description,
-        ...(autoinvoke === undefined ? {} : { autoinvoke }),
+        name: parsed.name,
+        description: parsed.description,
+        ...(parsed.autoinvoke === undefined ? {} : { autoinvoke: parsed.autoinvoke }),
         path: file,
-        content: body,
+        content: parsed.content,
       };
     });
 }

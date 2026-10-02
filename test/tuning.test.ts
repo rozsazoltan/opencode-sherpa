@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadSherpaTuning } from "../src/tuning.ts";
+import { loadSherpaTuning, parseSkillDocument } from "../src/tuning.ts";
 
 function fixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "sherpa-tuning-test-"));
@@ -101,4 +101,28 @@ test("skips blank instructions and rejects duplicate or unsafe instruction IDs",
   } finally {
     source.dispose();
   }
+});
+
+test("parses upstream skill metadata while preserving BOM and CRLF content semantics", () => {
+  const parsed = parseSkillDocument([
+    "\uFEFF---",
+    "name: Upstream Name",
+    "description: Upstream description.",
+    "license: MIT",
+    "metadata:",
+    "  opencode/autoinvoke: false",
+    "---",
+    "# Original heading",
+    "",
+    "Body.",
+  ].join("\r\n"), "sherpa-fixture-upstream", "fixture/SKILL.md");
+  expect(parsed).toEqual({
+    name: "Upstream Name",
+    description: "Upstream description.",
+    autoinvoke: false,
+    license: "MIT",
+    content: "# Original heading\r\n\r\nBody.",
+  });
+  expect(() => parseSkillDocument("---\nunsupported: true\n---\nBody.", "id", "source/SKILL.md"))
+    .toThrow("Unsupported frontmatter field 'unsupported'");
 });

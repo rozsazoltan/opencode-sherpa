@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
+import { hash } from "../src/agent-files.ts";
 import type { SherpaOmoAgent } from "../src/agent-sources.ts";
 import { parseCliArgs, runCli } from "../src/cli.ts";
-import { syncProject } from "../src/sync.ts";
+import { syncProject, type SyncDependencies } from "../src/sync.ts";
+import type { SherpaSkillResolution } from "../src/skill-sources.ts";
 
 function fixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "sherpa-cli-test-"));
@@ -19,6 +21,65 @@ function fixture() {
 }
 
 type FixtureWrite = (directory: string, relative: string, contents: string) => string;
+
+const RAW_UPSTREAM_SKILL = Buffer.from("\uFEFF---\r\ndescription: Upstream fixture skill.\r\n---\r\n\r\nOriginal upstream bytes.\r\n", "utf8");
+const UPSTREAM_BINARY = Buffer.from([0, 255, 7, 13, 10, 128]);
+const UPSTREAM_LICENSE = Buffer.from("Fixture license bytes.\n", "utf8");
+const UPSTREAM_SOURCE = Buffer.from('{"repository":"fixture"}\n', "utf8");
+
+function fakeSkillResolver() {
+  const calls: Array<{ ids: string[]; cacheDirectory?: string }> = [];
+  const resolveSkillSources: NonNullable<SyncDependencies["resolveSkillSources"]> = async (sources, options = {}) => {
+    const ids = [...(options.skillIds ?? [])];
+    calls.push({ ids, ...(options.cacheDirectory ? { cacheDirectory: options.cacheDirectory } : {}) });
+    const skills = ids.map((id) => {
+      const source = sources.find((candidate) => candidate.skills.some((entry) => `sherpa-${candidate.namespace}-${entry.id}` === id));
+      const entry = source?.skills.find((candidate) => `sherpa-${source.namespace}-${candidate.id}` === id);
+      if (!source || !entry) throw new Error(`Fake resolver received undeclared skill ${id}`);
+      const licenseEvidence = source.licensePath
+        ? { kind: "file" as const, path: source.licensePath, sha256: hash(UPSTREAM_LICENSE) }
+        : { kind: "declared" as const, identifier: source.license! };
+      const files = new Map<string, Buffer>([
+        ["SKILL.md", Buffer.from(RAW_UPSTREAM_SKILL)],
+        ["references/guide.md", Buffer.from("Support file.\r\n")],
+        ["references/sample.bin", Buffer.from(UPSTREAM_BINARY)],
+        ["SHERPA-SOURCE.json", Buffer.from(UPSTREAM_SOURCE)],
+      ]);
+      if (source.licensePath) files.set("SHERPA-LICENSE.txt", Buffer.from(UPSTREAM_LICENSE));
+      return {
+        id,
+        name: "Fixture upstream skill",
+        description: "Upstream fixture skill.",
+        path: `${source.repository}@${source.commit}/${entry.path}`,
+        content: "Parsed content is not used for materialization.",
+        files,
+      };
+    });
+    const sourceInfos = sources.flatMap((source) => {
+      const selected = skills.filter(({ id }) => id.startsWith(`sherpa-${source.namespace}-`));
+      if (selected.length === 0) return [];
+      return [{
+        namespace: source.namespace,
+        repository: source.repository,
+        commit: source.commit,
+        archiveSha256: "c".repeat(64),
+        skills: selected.map(({ id }) => {
+          const entry = source.skills.find((candidate) => `sherpa-${source.namespace}-${candidate.id}` === id)!;
+          const licenseEvidence = source.licensePath
+            ? { kind: "file" as const, path: source.licensePath, sha256: hash(UPSTREAM_LICENSE) }
+            : { kind: "declared" as const, identifier: source.license! };
+          return { id, sourcePath: entry.path, licenseEvidence };
+        }),
+      }];
+    });
+    return { skills, sources: sourceInfos, diagnostics: [] } satisfies SherpaSkillResolution;
+  };
+  return { calls, resolveSkillSources };
+}
+
+function defaultSkillSourceSettings(): { includeDefaults: true; sources: [] } {
+  return { includeDefaults: true, sources: [] };
+}
 
 function createTuning(root: string): void {
   const write = (relative: string, contents: string) => {
@@ -138,7 +199,7 @@ test("syncs project tuning, MCP, and OMO entries while preserving user data", as
   mkdirSync(project);
   createTuning(packageRoot);
   try {
-    fixtureData.write(project, "opencode-sherpa.jsonc", '{"agentSources":[],"commands":{"include":["review"]},"instructions":{"include":["00-core"]},"skills":{"include":["review"]}}\n');
+    fixtureData.write(project, "opencode-sherpa.jsonc", '{"agentSources":[],"skillSources":[],"commands":{"include":["review"]},"instructions":{"include":["00-core"]},"skills":{"include":["review"]}}\n');
     fixtureData.write(project, "AGENTS.md", "# Existing project guidance\n\nKeep this text.\n");
     const opencodeConfig = fixtureData.write(project, "opencode.jsonc", [
       "{",
@@ -206,7 +267,7 @@ test("dry-run reports planned writes without changing project files", async () =
   const packageRoot = path.join(fixtureData.root, "package");
   mkdirSync(project);
   createTuning(packageRoot);
-  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"commands":{"include":["review"]},"instructions":{"include":["00-core"]},"skills":{"include":["review"]}}\n');
+  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[],"commands":{"include":["review"]},"instructions":{"include":["00-core"]},"skills":{"include":["review"]}}\n');
   try {
     const output: string[] = [];
     const exitCode = await runCli(["sync", "--project", project, "--dry-run"], {
@@ -232,7 +293,15 @@ test("sync detects mixed repository stacks, selects curated content, and removes
   mkdirSync(project);
   createMixedProject(fixtureData.write, project);
   createSelectionTuning(packageRoot);
-  fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({ agentSources: [], commands: { include: ["review"] } }));
+  fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
+    agentSources: [],
+    skillSources: [],
+    commands: { include: ["review"] },
+    skills: {
+      auto: false,
+      include: ["sherpa-php-development", "sherpa-js-development", "sherpa-rust-development", "sherpa-laravel-development", "sherpa-vue-development"],
+    },
+  }));
   fixtureData.write(project, "opencode.jsonc", '{"mcp":{"servers":{"user-server":{"enabled":true}}}}\n');
   fixtureData.write(project, ".opencode/oh-my-opencode-slim.jsonc", '{"agents":{"reviewer":{"model":"user/reviewer"}}}\n');
   fixtureData.write(project, ".opencode/oh-my-opencode-slim/user-prompt.md", "User prompt.\n");
@@ -261,7 +330,7 @@ test("sync detects mixed repository stacks, selects curated content, and removes
       expect(dryRun.messages.some((message) => message.startsWith(`Manifest evidence ${manifest}:`))).toBe(true);
     }
     expect(dryRun.messages).toContain("- sherpa-fixture-laravel-specialist: Matched detected laravel feature.");
-    expect(dryRun.messages).toContain("- sherpa-laravel-development: Matched detected laravel feature.");
+    expect(dryRun.messages).toContain("- sherpa-laravel-development: Explicitly included.");
     expect(dryRun.messages).toContain("- sherpa-js-check: Matched detected js stack.");
     expect(dryRun.messages).toContain("- sherpa-php-check: Matched detected php stack.");
     expect(dryRun.messages).toContain("- sherpa-rust-check: Matched detected rust stack.");
@@ -391,7 +460,7 @@ test("selects stack-matched commands and instructions with common guidance", asy
       const project = path.join(fixtureData.root, `project-${item.name}`);
       mkdirSync(project);
       item.manifest(fixtureData.write, project);
-      fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[]}\n');
+      fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[]}\n');
       const beforeDryRun = snapshotFiles(project);
       const dryRun = await syncProject({ projectDirectory: project, packageRoot, dryRun: true });
       expect(snapshotFiles(project)).toEqual(beforeDryRun);
@@ -446,6 +515,7 @@ test("auto false includes manual content and exclusions take priority", async ()
   fixtureData.write(project, "package.json", '{"dependencies":{"typescript":"^5"}}');
   fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
     agentSources: [],
+    skillSources: [],
     commands: { auto: false, include: ["sherpa-js-check", "sherpa-write-issue"], exclude: ["sherpa-js-check"] },
     instructions: { auto: false, include: ["00-core", "10-js-development"], exclude: ["10-js-development"] },
   }));
@@ -474,7 +544,7 @@ test("selection shrink cleans owned commands and instructions without touching u
   mkdirSync(project);
   createMixedProject(fixtureData.write, project);
   createSelectionTuning(packageRoot);
-  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"language":"Hungarian"}\n');
+  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[],"language":"Hungarian"}\n');
   fixtureData.write(project, "AGENTS.md", "# User before\n\n# User after\n");
 
   try {
@@ -487,6 +557,7 @@ test("selection shrink cleans owned commands and instructions without touching u
     const customCommand = fixtureData.write(project, ".opencode/commands/custom.md", "User-owned custom command.\n");
     fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
       agentSources: [],
+      skillSources: [],
       language: "Hungarian",
       commands: { auto: false, include: ["review"] },
       instructions: { auto: false },
@@ -536,12 +607,13 @@ test("empty and disabled detection select only explicit content", async () => {
   mkdirSync(disabledAutoProject);
   mkdirSync(disabledProject);
   createSelectionTuning(packageRoot);
-  fixtureData.write(emptyProject, "opencode-sherpa.json", '{"agentSources":[]}\n');
+  fixtureData.write(emptyProject, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[]}\n');
   fixtureData.write(disabledAutoProject, "package.json", '{"dependencies":{"typescript":"^5"}}');
-  fixtureData.write(disabledAutoProject, "opencode-sherpa.json", '{"agentSources":[],"detection":{"enabled":false}}');
+  fixtureData.write(disabledAutoProject, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[],"detection":{"enabled":false}}');
   fixtureData.write(disabledProject, "package.json", '{"dependencies":{"typescript":"^5"}}\n');
   fixtureData.write(disabledProject, "opencode-sherpa.json", JSON.stringify({
     agentSources: [],
+    skillSources: [],
     detection: { enabled: false },
     agents: { auto: false, include: ["sherpa-fixture-extra"] },
     commands: { include: ["review"] },
@@ -601,19 +673,19 @@ test("invalid preferences, manifests, and content IDs fail before project writes
     readonly resolves: boolean;
   };
   const cases: InvalidCase[] = [
-    { name: "invalid detection options", settings: '{"agentSources":[],"detection":{"enabled":"no"}}', setup: () => undefined, resolves: false },
-    { name: "null command selection", settings: JSON.stringify({ agentSources: [], commands: null }), setup: () => undefined, resolves: false },
-    { name: "null instruction selection", settings: JSON.stringify({ agentSources: [], instructions: null }), setup: () => undefined, resolves: false },
-    { name: "unknown top-level command setting", settings: '{"agentSources":[],"commandss":{}}', setup: () => undefined, resolves: false },
-    { name: "unsupported command selection field", settings: JSON.stringify({ agentSources: [], commands: { optional: true } }), setup: () => undefined, resolves: false },
-    { name: "unsupported instruction selection field", settings: JSON.stringify({ agentSources: [], instructions: { optional: true } }), setup: () => undefined, resolves: false },
-    { name: "malformed project manifest", settings: '{"agentSources":[]}', setup: (write, project) => { write(project, "package.json", "{bad json"); }, resolves: false },
-    { name: "unknown agent ID", settings: JSON.stringify({ agentSources: [], agents: { include: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
-    { name: "unknown agent exclude ID", settings: JSON.stringify({ agentSources: [], agents: { exclude: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
-    { name: "unknown skill ID", settings: JSON.stringify({ agentSources: [], skills: { include: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
-    { name: "unknown command ID", settings: JSON.stringify({ agentSources: [], commands: { include: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
-    { name: "unknown instruction ID", settings: JSON.stringify({ agentSources: [], instructions: { exclude: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
-    { name: "malformed ownership manifest", settings: '{"agentSources":[]}', setup: (write, project) => { write(project, ".opencode/.sherpa-files.json", "{}\n"); }, resolves: true },
+    { name: "invalid detection options", settings: '{"agentSources":[],"skillSources":[],"detection":{"enabled":"no"}}', setup: () => undefined, resolves: false },
+    { name: "null command selection", settings: JSON.stringify({ agentSources: [], skillSources: [], commands: null }), setup: () => undefined, resolves: false },
+    { name: "null instruction selection", settings: JSON.stringify({ agentSources: [], skillSources: [], instructions: null }), setup: () => undefined, resolves: false },
+    { name: "unknown top-level command setting", settings: '{"agentSources":[],"skillSources":[],"commandss":{}}', setup: () => undefined, resolves: false },
+    { name: "unsupported command selection field", settings: JSON.stringify({ agentSources: [], skillSources: [], commands: { optional: true } }), setup: () => undefined, resolves: false },
+    { name: "unsupported instruction selection field", settings: JSON.stringify({ agentSources: [], skillSources: [], instructions: { optional: true } }), setup: () => undefined, resolves: false },
+    { name: "malformed project manifest", settings: '{"agentSources":[],"skillSources":[]}', setup: (write, project) => { write(project, "package.json", "{bad json"); }, resolves: false },
+    { name: "unknown agent ID", settings: JSON.stringify({ agentSources: [], skillSources: [], agents: { include: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
+    { name: "unknown agent exclude ID", settings: JSON.stringify({ agentSources: [], skillSources: [], agents: { exclude: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
+    { name: "unknown skill ID", settings: JSON.stringify({ agentSources: [], skillSources: [], skills: { include: ["sherpa-missing"] } }), setup: () => undefined, resolves: false },
+    { name: "unknown command ID", settings: JSON.stringify({ agentSources: [], skillSources: [], commands: { include: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
+    { name: "unknown instruction ID", settings: JSON.stringify({ agentSources: [], skillSources: [], instructions: { exclude: ["sherpa-missing"] } }), setup: () => undefined, resolves: true },
+    { name: "malformed ownership manifest", settings: '{"agentSources":[],"skillSources":[]}', setup: (write, project) => { write(project, ".opencode/.sherpa-files.json", "{}\n"); }, resolves: true },
   ];
 
   for (const item of cases) {
@@ -649,7 +721,7 @@ test("null detection and content selection fail before resolution for sync and d
       const fixtureData = fixture();
       const project = path.join(fixtureData.root, "project");
       mkdirSync(project);
-      fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({ agentSources: [], [setting]: null }));
+      fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({ agentSources: [], skillSources: [], [setting]: null }));
       let resolveCount = 0;
       const before = snapshotFiles(project);
 
@@ -676,7 +748,7 @@ test("source resolution failure exits clearly without changing project files", a
   const fixtureData = fixture();
   const project = path.join(fixtureData.root, "project");
   mkdirSync(project);
-  const settings = fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skills":{"include":["review"]}}\n');
+  const settings = fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[]}\n');
   try {
     const output: string[] = [];
     const exitCode = await runCli(["sync", "--project", project], {
@@ -699,11 +771,343 @@ test("source resolution failure exits clearly without changing project files", a
     expect(exitCode).toBe(1);
     expect(output.join("\n")).toContain("Agent source resolution failed; project files were not changed.");
     expect(output.join("\n")).toContain("fixture (source-unavailable): Pinned archive unavailable.");
-    expect(readFileSync(settings, "utf8")).toBe('{"agentSources":[],"skills":{"include":["review"]}}\n');
+    expect(readFileSync(settings, "utf8")).toBe('{"agentSources":[],"skillSources":[]}\n');
     expect(() => readFileSync(path.join(project, "AGENTS.md"))).toThrow();
     expect(() => readFileSync(path.join(project, "opencode.json"))).toThrow();
   } finally {
     fixtureData.dispose();
+  }
+});
+
+test("auto-selects pinned skills from PHP, JavaScript, and Rust evidence, not bundled skills", async () => {
+  const fixtureData = fixture();
+  const packageRoot = path.join(fixtureData.root, "package");
+  createSelectionTuning(packageRoot);
+  const expectedMixed = [
+    "sherpa-antfu-pnpm",
+    "sherpa-antfu-vite",
+    "sherpa-antfu-vue",
+    "sherpa-asyraf-php-best-practices",
+    "sherpa-leonardomso-rust-skills",
+    "sherpa-nuno-fortify-development",
+    "sherpa-nuno-laravel-best-practices",
+    "sherpa-nuno-wayfinder-development",
+  ];
+  const mixedProject = path.join(fixtureData.root, "mixed");
+  mkdirSync(mixedProject);
+  createMixedProject(fixtureData.write, mixedProject);
+  fixtureData.write(mixedProject, "package.json", JSON.stringify({
+    packageManager: "pnpm@9.0.0",
+    workspaces: ["apps/*", "packages/*"],
+    dependencies: { typescript: "^5.0.0", vue: "^3.0.0", vite: "^5.0.0" },
+  }));
+  fixtureData.write(mixedProject, "apps/api/composer.json", JSON.stringify({
+    require: { "laravel/framework": "^11.0", "laravel/fortify": "^1.0", "laravel/wayfinder": "^0.1" },
+  }));
+  fixtureData.write(mixedProject, "opencode-sherpa.json", JSON.stringify({
+    agentSources: [],
+    skillSources: defaultSkillSourceSettings(),
+  }));
+
+  const frontendProject = path.join(fixtureData.root, "frontend");
+  mkdirSync(frontendProject);
+  fixtureData.write(frontendProject, "package.json", JSON.stringify({
+    packageManager: "pnpm@9.0.0",
+    dependencies: { vue: "^3.0.0", vite: "^5.0.0" },
+  }));
+  fixtureData.write(frontendProject, "opencode-sherpa.json", JSON.stringify({
+    agentSources: [],
+    skillSources: defaultSkillSourceSettings(),
+  }));
+
+  try {
+    const mixedFake = fakeSkillResolver();
+    const mixed = await syncProject({ projectDirectory: mixedProject, packageRoot }, {
+      resolveSources: async () => ({ agents: [], sources: [], diagnostics: [] }),
+      resolveSkillSources: mixedFake.resolveSkillSources,
+    });
+    expect(mixedFake.calls.map(({ ids }) => ids[0])).toHaveLength(1);
+    expect(mixedFake.calls[0]?.ids).toEqual(expectedMixed);
+    expect(mixed.messages).toContain("Detected stacks: js, php, rust");
+    expect(mixed.messages).toContain("Detected features: axum, fortify, laravel, next, phpunit, pnpm, react, serde, typescript, vite, vue, wayfinder");
+    expect(mixed.messages).toContain("- sherpa-nuno-fortify-development: Matched detected fortify feature.");
+    expect(mixed.messages).toContain("- sherpa-nuno-wayfinder-development: Matched detected wayfinder feature.");
+    expect(mixed.messages).not.toContain("- sherpa-php-development: Matched detected php stack.");
+    expect(() => readFileSync(path.join(mixedProject, ".opencode/skills/sherpa-php-development/SKILL.md"))).toThrow();
+    for (const id of expectedMixed) {
+      expect(readFileSync(path.join(mixedProject, `.opencode/skills/${id}/SKILL.md`))).toEqual(RAW_UPSTREAM_SKILL);
+    }
+
+    const frontendFake = fakeSkillResolver();
+    const frontend = await syncProject({ projectDirectory: frontendProject, packageRoot }, {
+      resolveSources: async () => ({ agents: [], sources: [], diagnostics: [] }),
+      resolveSkillSources: frontendFake.resolveSkillSources,
+    });
+    expect(frontendFake.calls[0]?.ids).toEqual(["sherpa-antfu-pnpm", "sherpa-antfu-vite", "sherpa-antfu-vue"]);
+    expect(frontend.messages).not.toContain("- sherpa-nuno-fortify-development: Matched detected fortify feature.");
+    expect(frontend.messages).not.toContain("- sherpa-nuno-wayfinder-development: Matched detected wayfinder feature.");
+  } finally {
+    fixtureData.dispose();
+  }
+});
+
+test("explicit upstream and bundled skills materialize from byte maps and dry-run uses one temporary cache", async () => {
+  const fixtureData = fixture();
+  const project = path.join(fixtureData.root, "project");
+  const packageRoot = path.join(fixtureData.root, "package");
+  mkdirSync(project);
+  createSelectionTuning(packageRoot);
+  const externalIds = [
+    "sherpa-antfu-antfu",
+    "sherpa-mattpocock-diagnosing-bugs",
+    "sherpa-superpowers-brainstorming",
+  ];
+  fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
+    agentSources: [],
+    skillSources: defaultSkillSourceSettings(),
+    skills: { auto: false, include: [...externalIds, "extra/optional-skill"] },
+  }));
+  const baseResolver = fakeSkillResolver();
+  const skillCacheDirectories: string[] = [];
+  const agentCacheDirectories: string[] = [];
+  const resolveSkillSources: NonNullable<SyncDependencies["resolveSkillSources"]> = async (sources, options = {}) => {
+    if (options.cacheDirectory) {
+      skillCacheDirectories.push(options.cacheDirectory);
+      writeFileSync(path.join(options.cacheDirectory, "skill-cache-marker"), "cached\n");
+    }
+    return baseResolver.resolveSkillSources(sources, options);
+  };
+  const resolveSources: NonNullable<SyncDependencies["resolveSources"]> = async (_sources, options) => {
+    if (options?.cacheDirectory) {
+      agentCacheDirectories.push(options.cacheDirectory);
+      writeFileSync(path.join(options.cacheDirectory, "agent-cache-marker"), "cached\n");
+    }
+    return { agents: [], sources: [], diagnostics: [] };
+  };
+
+  try {
+    const beforeDryRun = snapshotFiles(project);
+    const dryRun = await syncProject({ projectDirectory: project, packageRoot, dryRun: true }, {
+      resolveSources,
+      resolveSkillSources,
+    });
+    expect(snapshotFiles(project)).toEqual(beforeDryRun);
+    expect(skillCacheDirectories).toHaveLength(1);
+    expect(agentCacheDirectories).toEqual(skillCacheDirectories);
+    expect(existsSync(skillCacheDirectories[0]!)).toBe(false);
+    expect(baseResolver.calls[0]?.ids).toEqual(externalIds);
+    expect(dryRun.messages).toContain("Would write .opencode/skills/sherpa-superpowers-brainstorming/references/sample.bin");
+    expect(dryRun.messages.some((message) => message.startsWith("Skill source sherpa-superpowers-brainstorming: obra/superpowers@"))).toBe(true);
+
+    const applied = await syncProject({ projectDirectory: project, packageRoot }, {
+      resolveSources,
+      resolveSkillSources,
+    });
+    const normalized = (message: string) => message
+      .replace(/^Would write /u, "Wrote ")
+      .replace(/^Would remove /u, "Removed ")
+      .replace(/^Would update /u, "Updated ");
+    expect(dryRun.messages.map(normalized)).toEqual([...applied.messages]);
+    const target = path.join(project, ".opencode/skills/sherpa-superpowers-brainstorming");
+    expect(readFileSync(path.join(target, "SKILL.md"))).toEqual(RAW_UPSTREAM_SKILL);
+    expect(readFileSync(path.join(target, "references/sample.bin"))).toEqual(UPSTREAM_BINARY);
+    expect(readFileSync(path.join(target, "SHERPA-LICENSE.txt"))).toEqual(UPSTREAM_LICENSE);
+    expect(readFileSync(path.join(target, "SHERPA-SOURCE.json"))).toEqual(UPSTREAM_SOURCE);
+    expect(readFileSync(path.join(project, ".opencode/skills/extra/optional-skill/SKILL.md"), "utf8"))
+      .toContain("extra/optional-skill guidance.");
+
+    writeFileSync(path.join(target, "references/sample.bin"), Buffer.from("user edit"));
+    fixtureData.write(project, ".opencode/skills/user-owned/SKILL.md", "User-owned skill.\n");
+    fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
+      agentSources: [],
+      skillSources: [],
+      skills: { auto: false },
+    }));
+    const shrunk = await syncProject({ projectDirectory: project, packageRoot }, {
+      resolveSources,
+      resolveSkillSources,
+    });
+    expect(shrunk.messages).toContain("Removed .opencode/skills/sherpa-superpowers-brainstorming/SKILL.md");
+    expect(shrunk.messages).toContain("Removed .opencode/skills/sherpa-superpowers-brainstorming/SHERPA-LICENSE.txt");
+    expect(shrunk.messages).toContain("Removed .opencode/skills/sherpa-superpowers-brainstorming/SHERPA-SOURCE.json");
+    expect(shrunk.messages).toContain("Removed .opencode/skills/sherpa-superpowers-brainstorming/references/guide.md");
+    expect(shrunk.messages).toContain("Preserved user file .opencode/skills/sherpa-superpowers-brainstorming/references/sample.bin");
+    expect(readFileSync(path.join(target, "references/sample.bin"), "utf8")).toBe("user edit");
+    expect(readFileSync(path.join(project, ".opencode/skills/user-owned/SKILL.md"), "utf8")).toBe("User-owned skill.\n");
+    expect(baseResolver.calls).toHaveLength(2);
+    const beforeIdempotent = snapshotFiles(project);
+    const secondShrink = await syncProject({ projectDirectory: project, packageRoot }, {
+      resolveSources,
+      resolveSkillSources,
+    });
+    expect(secondShrink.messages).toContain("Project is up to date.");
+    expect(snapshotFiles(project)).toEqual(beforeIdempotent);
+  } finally {
+    fixtureData.dispose();
+  }
+});
+
+test("disabled external sources keep explicit bundled skills and excluded known IDs do not fetch", async () => {
+  const fixtureData = fixture();
+  const project = path.join(fixtureData.root, "project");
+  const packageRoot = path.join(fixtureData.root, "package");
+  mkdirSync(project);
+  createSelectionTuning(packageRoot);
+  fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
+    agentSources: [],
+    skillSources: { includeDefaults: false, sources: [] },
+    skills: { auto: false, include: ["extra/optional-skill"] },
+  }));
+  const skillFake = fakeSkillResolver();
+  let agentCalls = 0;
+  try {
+    const result = await syncProject({ projectDirectory: project, packageRoot }, {
+      resolveSkillSources: skillFake.resolveSkillSources,
+      resolveSources: async () => {
+        agentCalls += 1;
+        return { agents: [], sources: [], diagnostics: [] };
+      },
+    });
+    expect(skillFake.calls).toEqual([]);
+    expect(agentCalls).toBe(1);
+    expect(result.messages).toContain("- extra/optional-skill: Explicitly included.");
+    expect(readFileSync(path.join(project, ".opencode/skills/extra/optional-skill/SKILL.md"), "utf8"))
+      .toContain("extra/optional-skill guidance.");
+  } finally {
+    fixtureData.dispose();
+  }
+
+  const excluded = fixture();
+  const excludedProject = path.join(excluded.root, "project");
+  const excludedPackage = path.join(excluded.root, "package");
+  mkdirSync(excludedProject);
+  createSelectionTuning(excludedPackage);
+  const knownId = "sherpa-superpowers-brainstorming";
+  excluded.write(excludedProject, "opencode-sherpa.json", JSON.stringify({
+    agentSources: [],
+    skillSources: defaultSkillSourceSettings(),
+    skills: { include: [knownId], exclude: [knownId] },
+  }));
+  const excludedFake = fakeSkillResolver();
+  let excludedAgentCalls = 0;
+  try {
+    const result = await syncProject({ projectDirectory: excludedProject, packageRoot: excludedPackage }, {
+      resolveSkillSources: excludedFake.resolveSkillSources,
+      resolveSources: async () => {
+        excludedAgentCalls += 1;
+        return { agents: [], sources: [], diagnostics: [] };
+      },
+    });
+    expect(excludedFake.calls).toEqual([]);
+    expect(excludedAgentCalls).toBe(1);
+    expect(result.messages).toContain("Selected skills: none");
+    expect(() => readFileSync(path.join(excludedProject, ".opencode/skills/sherpa-superpowers-brainstorming/SKILL.md"))).toThrow();
+  } finally {
+    excluded.dispose();
+  }
+});
+
+test("invalid skill preferences and source descriptors fail before either resolver or project writes", async () => {
+  const invalidSource = { namespace: "unsafe/namespace" };
+  const cases = [
+    { name: "null skill selection", settings: { skills: null } },
+    { name: "unknown skill include and exclude", settings: { skills: { include: ["sherpa-missing"], exclude: ["sherpa-missing"] } } },
+    { name: "duplicate skill include", settings: { skills: { include: ["review", "review"] } } },
+    { name: "invalid source namespace", settings: { skillSources: [invalidSource] } },
+    { name: "null skill sources", settings: { skillSources: null } },
+  ];
+  for (const item of cases) {
+    const fixtureData = fixture();
+    const project = path.join(fixtureData.root, "project");
+    const packageRoot = path.join(fixtureData.root, "package");
+    mkdirSync(project);
+    createTuning(packageRoot);
+    fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({ agentSources: [], skillSources: [], ...item.settings }));
+    const before = snapshotFiles(project);
+    let skillCalls = 0;
+    let agentCalls = 0;
+    try {
+      await expect(syncProject({ projectDirectory: project, packageRoot }, {
+        resolveSkillSources: async () => {
+          skillCalls += 1;
+          return { skills: [], sources: [], diagnostics: [] };
+        },
+        resolveSources: async () => {
+          agentCalls += 1;
+          return { agents: [], sources: [], diagnostics: [] };
+        },
+      })).rejects.toThrow();
+      expect(skillCalls).toBe(0);
+      expect(agentCalls).toBe(0);
+      expect(snapshotFiles(project)).toEqual(before);
+    } finally {
+      fixtureData.dispose();
+    }
+  }
+});
+
+test("selected upstream resolution diagnostics and malformed results abort before project writes", async () => {
+  const cases = ["diagnostic", "omitted", "duplicate", "unsafe-file"] as const;
+  for (const failure of cases) {
+    const fixtureData = fixture();
+    const project = path.join(fixtureData.root, "project");
+    const packageRoot = path.join(fixtureData.root, "package");
+    mkdirSync(project);
+    createTuning(packageRoot);
+    fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
+      agentSources: [],
+      skillSources: defaultSkillSourceSettings(),
+      skills: { auto: false, include: ["sherpa-superpowers-brainstorming"] },
+    }));
+    const before = snapshotFiles(project);
+    const baseResolver = fakeSkillResolver();
+    let agentCalls = 0;
+    try {
+      const resolveSkillSources: NonNullable<SyncDependencies["resolveSkillSources"]> = async (sources, options = {}) => {
+        const resolution = await baseResolver.resolveSkillSources(sources, options);
+        if (failure === "diagnostic") {
+          return {
+            skills: [],
+            sources: [],
+            diagnostics: [{
+              namespace: "superpowers",
+              repository: "obra/superpowers",
+              commit: "8ca22dba9a94f28898bbce59f2537ff4d87c747d",
+              code: "invalid-license",
+              message: "Selected source license evidence is invalid.",
+              skillId: "sherpa-superpowers-brainstorming",
+              sourcePath: "skills/brainstorming/SKILL.md",
+            }],
+          };
+        }
+        if (failure === "omitted") return { ...resolution, skills: [], sources: [] };
+        if (failure === "duplicate") return { ...resolution, skills: [...resolution.skills, ...resolution.skills] };
+        return {
+          ...resolution,
+          skills: resolution.skills.map((skill) => ({
+            ...skill,
+            files: new Map([...(skill.files ?? []), ["../escape", Buffer.from("unsafe")]]),
+          })),
+        };
+      };
+      const result = syncProject({ projectDirectory: project, packageRoot }, {
+        resolveSkillSources,
+        resolveSources: async () => {
+          agentCalls += 1;
+          return { agents: [], sources: [], diagnostics: [] };
+        },
+      });
+      if (failure === "diagnostic") {
+        await expect(result).rejects.toThrow("Skill source resolution failed; project files were not changed.");
+      } else {
+        await expect(result).rejects.toThrow();
+      }
+      expect(agentCalls).toBe(0);
+      expect(snapshotFiles(project)).toEqual(before);
+      expect(() => readFileSync(path.join(project, "AGENTS.md"))).toThrow();
+    } finally {
+      fixtureData.dispose();
+    }
   }
 });
 
@@ -713,7 +1117,7 @@ test("preserves user-owned command and skill files", async () => {
   const packageRoot = path.join(fixtureData.root, "package");
   mkdirSync(project);
   createTuning(packageRoot);
-  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"commands":{"include":["review"]},"skills":{"include":["review"]}}\n');
+  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[],"commands":{"include":["review"]},"skills":{"include":["review"]}}\n');
   const userCommand = fixtureData.write(project, ".opencode/commands/review.md", "User command.\n");
   const userSkill = fixtureData.write(project, ".opencode/skills/review/SKILL.md", "User skill.\n");
   try {
