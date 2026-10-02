@@ -14,6 +14,7 @@ import {
 import { configuredSherpaAgentSources, resolveSherpaAgentSources, type SherpaAgentResolution } from "./agent-sources.ts";
 import { createEngineeringInstructions } from "./instructions.ts";
 import { createRemoteMcpServers } from "./mcp.ts";
+import { defaultOpenCodeConfigDirectory, readGlobalMcpServerNames } from "./opencode-config.ts";
 import { reconcileSherpaOmoAgents } from "./omo-agents.ts";
 import { configuredProjectDetection, detectProject } from "./project-detection.ts";
 import { configuredContentSelection, selectProjectContent, selectProjectSkillIds } from "./project-selection.ts";
@@ -45,6 +46,12 @@ interface PlannedFileRemoval {
   readonly previousContents: Buffer;
 }
 
+interface McpConfigPlan {
+  readonly write: PlannedFileWrite | undefined;
+  readonly localServerNames: readonly string[];
+  readonly builtInServerNames: readonly string[];
+}
+
 interface ArtifactPlan {
   readonly writes: PlannedFileWrite[];
   readonly removals: PlannedFileRemoval[];
@@ -73,6 +80,7 @@ export interface SyncDependencies {
   readonly resolveSources?: typeof resolveSherpaAgentSources;
   readonly resolveSkillSources?: typeof resolveSherpaSkillSources;
   readonly packageRoot?: string;
+  readonly globalConfigDirectory?: string;
 }
 
 export interface SyncResult {
@@ -108,7 +116,12 @@ function loadProjectSettings(projectDirectory: string): ProjectSettings {
   return parsed;
 }
 
-function planMcpConfig(projectDirectory: string, options: unknown): PlannedFileWrite | undefined {
+function planMcpConfig(
+  projectDirectory: string,
+  options: unknown,
+  globalServerNames: readonly string[],
+  globalConfigDirectory: string,
+): McpConfigPlan {
   const configPath = selectConfigPath(projectDirectory, OPENCODE_CONFIG_FILES, "OpenCode config");
   const currentContents = readTextFile(configPath);
   const source = currentContents ?? "{}\n";
@@ -121,7 +134,16 @@ function planMcpConfig(projectDirectory: string, options: unknown): PlannedFileW
     throw new Error(`OpenCode config 'mcp.servers' must be an object: ${configPath}`);
   }
   const existingServers = isRecord(mcp.servers) ? mcp.servers : {};
-  const servers = createRemoteMcpServers(options as Parameters<typeof createRemoteMcpServers>[0], existingServers);
+  const globalServerSet = new Set(globalServerNames);
+  const servers = createRemoteMcpServers(options as Parameters<typeof createRemoteMcpServers>[0], {
+    ...existingServers,
+    ...Object.fromEntries(globalServerNames.map((name) => [name, true])),
+  }, { globalConfigDirectory });
+  const builtInServerNames = Object.keys(servers);
+  const additions = Object.entries(servers).filter(([name]) =>
+    !Object.hasOwn(existingServers, name) && !globalServerSet.has(name));
+  const localServerNames = Object.keys(existingServers);
+  if (additions.length === 0) return { write: undefined, localServerNames, builtInServerNames };
   let next = source;
   if (!Object.hasOwn(parsed, "mcp")) {
     next = applyEdits(next, modify(next, ["mcp"], {}, {
@@ -133,18 +155,21 @@ function planMcpConfig(projectDirectory: string, options: unknown): PlannedFileW
       formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
     }));
   }
-  for (const [name, server] of Object.entries(servers)) {
-    if (Object.hasOwn(existingServers, name)) continue;
+  for (const [name, server] of additions) {
     next = applyEdits(next, modify(next, ["mcp", "servers", name], server, {
       formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
     }));
   }
-  if (next === source) return undefined;
+  if (next === source) return { write: undefined, localServerNames, builtInServerNames };
   return {
-    target: configPath,
-    relativePath: path.relative(projectDirectory, configPath).split(path.sep).join("/"),
-    contents: Buffer.from(next),
-    previousContents: currentContents === undefined ? undefined : Buffer.from(currentContents),
+    write: {
+      target: configPath,
+      relativePath: path.relative(projectDirectory, configPath).split(path.sep).join("/"),
+      contents: Buffer.from(next),
+      previousContents: currentContents === undefined ? undefined : Buffer.from(currentContents),
+    },
+    localServerNames,
+    builtInServerNames,
   };
 }
 
@@ -522,6 +547,8 @@ export async function syncProject(
   const projectDirectory = path.resolve(options.projectDirectory);
   const projectStat = inspectPath(projectDirectory);
   if (!projectStat?.isDirectory()) throw new Error(`OpenCode project path is not a directory: ${projectDirectory}`);
+  const globalConfigDirectory = dependencies.globalConfigDirectory ?? defaultOpenCodeConfigDirectory();
+  const globalServerNames = readGlobalMcpServerNames(globalConfigDirectory);
   const settings = loadProjectSettings(projectDirectory);
   const sources = configuredSherpaAgentSources(settings.agentSources);
   const skillSources = configuredSherpaSkillSources(settings.skillSources);
@@ -598,12 +625,23 @@ export async function syncProject(
     skills: selection.skills,
   };
   const artifactPlan = planArtifacts(projectDirectory, filteredTuning, settings.language);
-  const mcpWrite = planMcpConfig(projectDirectory, settings.mcp);
+  const mcpPlan = planMcpConfig(projectDirectory, settings.mcp, globalServerNames, globalConfigDirectory);
+  const mcpWrite = mcpPlan.write;
   const omoResult = reconcileSherpaOmoAgents(filteredResolution, { projectDirectory, dryRun: true });
+  const localMcpServerNames = new Set(mcpPlan.localServerNames);
+  const builtInMcpNames = new Set(mcpPlan.builtInServerNames);
   const messages = [
     ...printSelection(detection, selection),
     ...skillSourceMessages(skillResolution),
     ...printActions(projectDirectory, artifactPlan, mcpWrite, omoResult.changedPaths, dryRun),
+    ...globalServerNames
+      .filter((name) => builtInMcpNames.has(name) && !localMcpServerNames.has(name))
+      .sort()
+      .map((name) => `Skipped global MCP server ${name}.`),
+    ...globalServerNames
+      .filter((name) => localMcpServerNames.has(name))
+      .sort()
+      .map((name) => `Preserved project MCP server ${name}; project server takes precedence over the global server. Remove project entry manually if intended.`),
   ];
 
   if (!dryRun) {

@@ -189,25 +189,33 @@ Agent sync requires OMO-Slim. It updates only project `.opencode/oh-my-opencode-
 
 ### MCP servers
 
-Sync adds these project-level remote MCP entries only when their names are absent:
+Built-in remote MCP entries live in `src/mcp-catalog.ts`. Sync adds project entries only when their names are absent from both the project config and the global config:
 
 - `github` — `https://api.githubcopilot.com/mcp/`
 - `jina` — `https://mcp.jina.ai/v1`
 - `context7` — `https://mcp.context7.com/mcp`
 - `gh_grep` — `https://mcp.grep.app`
 
-Existing servers are never replaced. GitHub uses OpenCode-managed OAuth by default. To use a token file instead:
+For this lookup, Sherpa reads `opencode.json` or `opencode.jsonc` in `$XDG_CONFIG_HOME/opencode` when `XDG_CONFIG_HOME` is absolute, otherwise `~/.config/opencode`. It never writes global configuration, resolves its credential references, or copies its headers into the project. A globally configured name is preserved even when that server is disabled. Ambiguous files or malformed MCP configuration stop sync before project writes. This lookup is not a complete evaluation of every OpenCode configuration layer.
+
+Existing project servers are never replaced or removed. If a name exists both locally and globally, the project server still shadows the entire global server object, including its authentication settings. Sherpa reports that conflict; remove the project entry manually if you want to use the global one. If all catalog entries already exist locally or globally, sync does not create an empty project MCP config.
+
+GitHub uses OpenCode-managed OAuth by default. To use a globally stored token file instead:
 
 ```jsonc
 {
   "mcp": {
     "githubAuth": "token-file",
-    "githubTokenFile": "/absolute/path/to/github-key"
+    "githubTokenFile": "/absolute/path/to/opencode/.secrets/github-key"
   }
 }
 ```
 
-`githubTokenFile` must be absolute and contain one line. Without it, Sherpa reads `$XDG_CONFIG_HOME/opencode/.secrets/github-key` or `~/.config/opencode/.secrets/github-key`. When no GitHub MCP entry exists, sync writes the token as an Authorization header in the project OpenCode config. Keep that config out of source control or use OAuth. If a GitHub MCP entry already exists, Sherpa preserves it and does not read the token file.
+`githubTokenFile` must be an absolute path. Without the override, the conventional filename is `.secrets/github-key` under the global config directory above. For a missing GitHub server, token-file mode writes `oauth: false` and an Authorization value such as `Bearer {file:/absolute/path/to/opencode/.secrets/github-key}`. It does not embed the token. OpenCode reads the referenced file when it loads the configuration; Sherpa never reads or validates the secret file, including during dry-run.
+
+Do not copy a relative global reference such as `{file:./.secrets/github-key}` unchanged into a project config. Sherpa generates an absolute reference to the global file instead. Token-file authentication is opt-in; the other built-in entries remain URL-only. Keep any provider-specific credentials in your global OpenCode config rather than assuming every MCP uses the same authentication scheme.
+
+**Migration:** older Sherpa versions embedded token values in generated project headers. Existing entries are preserved, so this update does not automatically remove those values. Replace the old header with a file reference, or remove the project server to use its global definition. If a token was committed or shared, revoke or rotate it.
 
 ## Materialized project files
 

@@ -5,8 +5,8 @@ import path from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
 import { hash } from "../src/agent-files.ts";
 import type { SherpaOmoAgent } from "../src/agent-sources.ts";
-import { parseCliArgs, runCli } from "../src/cli.ts";
-import { syncProject, type SyncDependencies } from "../src/sync.ts";
+import { parseCliArgs, runCli as runCliImpl } from "../src/cli.ts";
+import { syncProject as syncProjectImpl, type SyncDependencies } from "../src/sync.ts";
 import type { SherpaSkillResolution } from "../src/skill-sources.ts";
 
 function fixture() {
@@ -18,6 +18,32 @@ function fixture() {
     return target;
   };
   return { root, write, dispose: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+function syncProject(
+  options: Parameters<typeof syncProjectImpl>[0],
+  dependencies: SyncDependencies = {},
+) {
+  return syncProjectImpl(options, {
+    ...dependencies,
+    globalConfigDirectory: dependencies.globalConfigDirectory ?? path.resolve(options.projectDirectory, ".test-global-opencode-config"),
+  });
+}
+
+function runCli(
+  args: Parameters<typeof runCliImpl>[0],
+  io: Parameters<typeof runCliImpl>[1] = {},
+  dependencies: SyncDependencies = {},
+) {
+  const projectOption = args.indexOf("--project");
+  const requestedProject = projectOption < 0 ? undefined : args[projectOption + 1];
+  const projectDirectory = path.resolve(io.cwd ?? process.cwd(), requestedProject && !requestedProject.startsWith("--")
+    ? requestedProject
+    : ".");
+  return runCliImpl(args, io, {
+    ...dependencies,
+    globalConfigDirectory: dependencies.globalConfigDirectory ?? path.join(projectDirectory, ".test-global-opencode-config"),
+  });
 }
 
 type FixtureWrite = (directory: string, relative: string, contents: string) => string;
@@ -1129,5 +1155,177 @@ test("preserves user-owned command and skill files", async () => {
     expect(() => readFileSync(path.join(project, ".opencode/skills/review/references/checklist.md"))).toThrow();
   } finally {
     fixtureData.dispose();
+  }
+});
+
+test("global MCP servers suppress project defaults without exposing or changing credentials", async () => {
+  const fixtureData = fixture();
+  const project = path.join(fixtureData.root, "project");
+  const packageRoot = path.join(fixtureData.root, "package");
+  const globalConfigDirectory = path.join(fixtureData.root, "global-config");
+  mkdirSync(project);
+  createTuning(packageRoot);
+  fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
+    agentSources: [],
+    skillSources: [],
+    mcp: { githubAuth: "token-file", githubTokenFile: path.join(fixtureData.root, "missing-token") },
+  }));
+  const globalConfig = fixtureData.write(fixtureData.root, "global-config/opencode.jsonc", `{
+    "mcp": { "servers": {
+      "github": { "type": "remote", "headers": { "Authorization": "Bearer global-secret-sentinel" } },
+      "jina": false
+    } }
+  }\n`);
+  const dependencies: SyncDependencies = {
+    globalConfigDirectory,
+    resolveSources: async () => ({ agents: [], sources: [], diagnostics: [] }),
+  };
+  const originalGlobalConfig = readFileSync(globalConfig, "utf8");
+
+  try {
+    const beforeDryRun = snapshotFiles(project);
+    const dryRun = await syncProject({ projectDirectory: project, packageRoot, dryRun: true }, dependencies);
+    expect(snapshotFiles(project)).toEqual(beforeDryRun);
+    expect(dryRun.messages).toContain("Skipped global MCP server github.");
+    expect(dryRun.messages).toContain("Skipped global MCP server jina.");
+    expect(dryRun.messages.join("\n")).not.toContain("global-secret-sentinel");
+
+    const applied = await syncProject({ projectDirectory: project, packageRoot }, dependencies);
+    expect(applied.messages.join("\n")).not.toContain("global-secret-sentinel");
+    const projectConfig = readFileSync(path.join(project, "opencode.json"), "utf8");
+    const parsed = parseJsonc(projectConfig) as { mcp: { servers: Record<string, unknown> } };
+    expect(parsed.mcp.servers.github).toBeUndefined();
+    expect(parsed.mcp.servers.jina).toBeUndefined();
+    expect(readFileSync(globalConfig, "utf8")).toBe(originalGlobalConfig);
+
+    const beforeSecondApply = snapshotFiles(project);
+    const second = await syncProject({ projectDirectory: project, packageRoot }, dependencies);
+    expect(second.messages).toContain("Project is up to date.");
+    expect(snapshotFiles(project)).toEqual(beforeSecondApply);
+  } finally {
+    fixtureData.dispose();
+  }
+});
+
+test("preserves local MCP override when same-name project server takes precedence", async () => {
+  const fixtureData = fixture();
+  const project = path.join(fixtureData.root, "project");
+  const packageRoot = path.join(fixtureData.root, "package");
+  const globalConfigDirectory = path.join(fixtureData.root, "global-config");
+  mkdirSync(project);
+  createTuning(packageRoot);
+  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[]}\n');
+  fixtureData.write(project, "opencode.jsonc", [
+    "{",
+    '  "mcp": { "servers": { "github": { "type": "local", "command": ["user-github"], "headers": { "Authorization": "Bearer local-secret-sentinel" } } } }',
+    "}",
+  ].join("\n"));
+  fixtureData.write(fixtureData.root, "global-config/opencode.json", '{"mcp":{"servers":{"github":{"enabled":false}}}}\n');
+
+  try {
+    const result = await syncProject({ projectDirectory: project, packageRoot }, {
+      globalConfigDirectory,
+      resolveSources: async () => ({ agents: [], sources: [], diagnostics: [] }),
+    });
+    expect(result.messages).toContain("Preserved project MCP server github; project server takes precedence over the global server. Remove project entry manually if intended.");
+    expect(result.messages.join("\n")).not.toContain("local-secret-sentinel");
+    const config = readFileSync(path.join(project, "opencode.jsonc"), "utf8");
+    expect(parseJsonc(config)).toMatchObject({
+      mcp: { servers: { github: {
+        type: "local",
+        command: ["user-github"],
+        headers: { Authorization: "Bearer local-secret-sentinel" },
+      } } },
+    });
+    expect(config).toContain('"type": "local"');
+  } finally {
+    fixtureData.dispose();
+  }
+});
+
+test("does not create project MCP config when every built-in server exists globally", async () => {
+  const fixtureData = fixture();
+  const project = path.join(fixtureData.root, "project");
+  const packageRoot = path.join(fixtureData.root, "package");
+  const globalConfigDirectory = path.join(fixtureData.root, "global-config");
+  mkdirSync(project);
+  createTuning(packageRoot);
+  fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[]}\n');
+  fixtureData.write(fixtureData.root, "global-config/opencode.json", '{"mcp":{"servers":{"github":false,"jina":false,"context7":false,"gh_grep":false}}}\n');
+
+  try {
+    const dependencies: SyncDependencies = {
+      globalConfigDirectory,
+      resolveSources: async () => ({ agents: [], sources: [], diagnostics: [] }),
+    };
+    const beforeDryRun = snapshotFiles(project);
+    const dryRun = await syncProject({ projectDirectory: project, packageRoot, dryRun: true }, dependencies);
+    expect(snapshotFiles(project)).toEqual(beforeDryRun);
+    expect(dryRun.messages.some((message) => message.includes("write opencode.json"))).toBe(false);
+    await syncProject({ projectDirectory: project, packageRoot }, dependencies);
+    expect(() => readFileSync(path.join(project, "opencode.json"))).toThrow();
+  } finally {
+    fixtureData.dispose();
+  }
+});
+
+test("uses injected global config directory for generated GitHub file references", async () => {
+  const fixtureData = fixture();
+  const project = path.join(fixtureData.root, "project");
+  const packageRoot = path.join(fixtureData.root, "package");
+  const globalConfigDirectory = path.join(fixtureData.root, "global-config");
+  mkdirSync(project);
+  createTuning(packageRoot);
+  fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
+    agentSources: [],
+    skillSources: [],
+    mcp: { githubAuth: "token-file" },
+  }));
+  const globalConfig = fixtureData.write(fixtureData.root, "global-config/opencode.json", '{"mcp":{"servers":{"jina":false}}}\n');
+
+  try {
+    const result = await syncProject({ projectDirectory: project, packageRoot }, {
+      globalConfigDirectory,
+      resolveSources: async () => ({ agents: [], sources: [], diagnostics: [] }),
+    });
+    const config = parseJsonc(readFileSync(path.join(project, "opencode.json"), "utf8")) as {
+      mcp: { servers: Record<string, { headers?: { Authorization?: string } }> };
+    };
+    expect(config.mcp.servers.github?.headers?.Authorization)
+      .toBe(`Bearer {file:${path.join(globalConfigDirectory, ".secrets", "github-key")}}`);
+    expect(config.mcp.servers.jina).toBeUndefined();
+    expect(result.messages.join("\n")).not.toContain("sentinel");
+    expect(readFileSync(globalConfig, "utf8")).toBe('{"mcp":{"servers":{"jina":false}}}\n');
+  } finally {
+    fixtureData.dispose();
+  }
+});
+
+test("invalid global MCP config fails before source resolution and project writes, including dry-run", async () => {
+  for (const dryRun of [false, true]) {
+    const fixtureData = fixture();
+    const project = path.join(fixtureData.root, "project");
+    const packageRoot = path.join(fixtureData.root, "package");
+    const globalConfigDirectory = path.join(fixtureData.root, "global-config");
+    mkdirSync(project);
+    createTuning(packageRoot);
+    fixtureData.write(project, "opencode-sherpa.json", '{"agentSources":[],"skillSources":[]}\n');
+    fixtureData.write(fixtureData.root, "global-config/opencode.json", '{"mcp":{"servers":[]}}\n');
+    const before = snapshotFiles(project);
+    let resolverCalls = 0;
+
+    try {
+      await expect(syncProject({ projectDirectory: project, packageRoot, dryRun }, {
+        globalConfigDirectory,
+        resolveSources: async () => {
+          resolverCalls += 1;
+          return { agents: [], sources: [], diagnostics: [] };
+        },
+      })).rejects.toThrow("Global OpenCode config 'mcp.servers' must be an object");
+      expect(resolverCalls).toBe(0);
+      expect(snapshotFiles(project)).toEqual(before);
+    } finally {
+      fixtureData.dispose();
+    }
   }
 });

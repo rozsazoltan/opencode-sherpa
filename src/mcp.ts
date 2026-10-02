@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { DEFAULT_SHERPA_MCP_CATALOG } from "./mcp-catalog.ts";
+import { defaultOpenCodeConfigDirectory } from "./opencode-config.ts";
 
 export interface McpOptions {
   /** Defaults to OpenCode-managed OAuth. */
@@ -9,10 +9,9 @@ export interface McpOptions {
   readonly githubTokenFile?: string;
 }
 
-const GITHUB_URL = "https://api.githubcopilot.com/mcp/";
-const JINA_URL = "https://mcp.jina.ai/v1";
-const CONTEXT7_URL = "https://mcp.context7.com/mcp";
-const GH_GREP_URL = "https://mcp.grep.app";
+interface McpRuntimeOptions {
+  readonly globalConfigDirectory?: string;
+}
 
 function validateOptions(options: unknown): McpOptions {
   if (options === undefined) return {};
@@ -36,6 +35,7 @@ function validateOptions(options: unknown): McpOptions {
     if (typeof githubTokenFile !== "string" || !path.isAbsolute(githubTokenFile)) {
       throw new TypeError("githubTokenFile must be an absolute path.");
     }
+    validateFileTemplatePath(githubTokenFile, "githubTokenFile");
     if (githubAuth !== "token-file") {
       throw new TypeError("githubTokenFile requires githubAuth to be 'token-file'.");
     }
@@ -47,50 +47,61 @@ function validateOptions(options: unknown): McpOptions {
   };
 }
 
-function defaultGithubTokenFile(): string {
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME;
-  const configHome = xdgConfigHome && path.isAbsolute(xdgConfigHome)
-    ? xdgConfigHome
-    : path.join(os.homedir(), ".config");
-  return path.join(configHome, "opencode", ".secrets", "github-key");
+function validateFileTemplatePath(filePath: string, name: string): void {
+  if (/[\0\r\n{}]/u.test(filePath)) {
+    throw new TypeError(`${name} contains characters that cannot be used in an OpenCode file reference.`);
+  }
 }
 
-function readGithubToken(tokenFile: string): string {
-  let contents: string;
-  try {
-    contents = readFileSync(tokenFile, "utf8");
-  } catch {
-    throw new Error("Unable to read GitHub token file.");
+function validateRuntimeOptions(options: unknown): McpRuntimeOptions {
+  if (options === undefined) return {};
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw new TypeError("MCP runtime options must be an object.");
   }
 
-  const token = contents.replace(/[\r\n]+$/u, "");
-  if (token.trim().length === 0) throw new Error("GitHub token file is empty.");
-  if (/[\r\n]/u.test(token)) throw new Error("GitHub token file must contain one line.");
-  return token;
+  const values = options as Record<string, unknown>;
+  const unsupportedOption = Object.keys(values).find((key) => key !== "globalConfigDirectory");
+  if (unsupportedOption) throw new TypeError(`Unsupported MCP runtime option: ${unsupportedOption}.`);
+
+  const globalConfigDirectory = values.globalConfigDirectory;
+  if (globalConfigDirectory !== undefined) {
+    if (typeof globalConfigDirectory !== "string" || !path.isAbsolute(globalConfigDirectory)) {
+      throw new TypeError("globalConfigDirectory must be an absolute path.");
+    }
+    validateFileTemplatePath(globalConfigDirectory, "globalConfigDirectory");
+    return { globalConfigDirectory };
+  }
+
+  return {};
 }
 
 /** Return default remote MCP entries for merging into project-local OpenCode config. */
 export function createRemoteMcpServers(
   options?: McpOptions,
   existingServers: Readonly<Record<string, unknown>> = {},
+  runtimeOptions?: McpRuntimeOptions,
 ): Record<string, unknown> {
   const validatedOptions = validateOptions(options);
+  const validatedRuntimeOptions = validateRuntimeOptions(runtimeOptions);
   const useTokenFile = validatedOptions.githubAuth === "token-file";
-  const githubToken = useTokenFile && !Object.hasOwn(existingServers, "github")
-    ? readGithubToken(validatedOptions.githubTokenFile ?? defaultGithubTokenFile())
+  const githubTokenFile = useTokenFile && !Object.hasOwn(existingServers, "github")
+    ? validatedOptions.githubTokenFile ?? path.join(
+        validatedRuntimeOptions.globalConfigDirectory ?? defaultOpenCodeConfigDirectory(),
+        ".secrets",
+        "github-key",
+      )
     : undefined;
+  if (githubTokenFile !== undefined) validateFileTemplatePath(githubTokenFile, "GitHub token file path");
 
-  return {
-    github: githubToken === undefined
-      ? { type: "remote", url: GITHUB_URL }
-      : {
+  return Object.fromEntries(DEFAULT_SHERPA_MCP_CATALOG.map(({ id, url }) => [
+    id,
+    id === "github" && githubTokenFile !== undefined
+      ? {
           type: "remote",
-          url: GITHUB_URL,
+          url,
           oauth: false,
-          headers: { Authorization: `Bearer ${githubToken}` },
-        },
-    jina: { type: "remote", url: JINA_URL },
-    context7: { type: "remote", url: CONTEXT7_URL },
-    gh_grep: { type: "remote", url: GH_GREP_URL },
-  };
+          headers: { Authorization: `Bearer {file:${githubTokenFile}}` },
+        }
+      : { type: "remote", url },
+  ]));
 }

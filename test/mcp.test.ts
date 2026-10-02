@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { expect, spyOn, test } from "bun:test";
+import fs, { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRemoteMcpServers } from "../src/mcp.ts";
@@ -13,34 +13,94 @@ test("builds default project MCP entries", () => {
   });
 });
 
-test("supports token-file GitHub auth without exposing token on errors", () => {
+test("uses OpenCode file references for explicit GitHub token-file auth", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "sherpa-mcp-"));
   const tokenFile = path.join(root, "github-key");
-  const token = "fixture-token-not-a-real-credential";
+  const sentinel = "fixture-sentinel-not-a-credential";
+  const fileContents = Buffer.from(`${sentinel}\nsecond-line\n\u0000\xff`, "binary");
   try {
-    expect(() => createRemoteMcpServers({
-      githubAuth: "token-file",
-      githubTokenFile: path.join(root, "missing-key"),
-    }, { github: { type: "local" } })).not.toThrow();
-    writeFileSync(tokenFile, `${token}\r\n`);
-    expect(createRemoteMcpServers({ githubAuth: "token-file", githubTokenFile: tokenFile }).github)
+    writeFileSync(tokenFile, fileContents);
+    const read = spyOn(fs, "readFileSync");
+    const stat = spyOn(fs, "statSync");
+    const open = spyOn(fs, "openSync");
+    try {
+      const servers = createRemoteMcpServers(
+        { githubAuth: "token-file", githubTokenFile: tokenFile },
+        {},
+        { globalConfigDirectory: root },
+      );
+      expect(servers.github).toEqual({
+        type: "remote",
+        url: "https://api.githubcopilot.com/mcp/",
+        oauth: false,
+        headers: { Authorization: `Bearer {file:${tokenFile}}` },
+      });
+      expect(JSON.stringify(servers)).not.toContain(sentinel);
+      expect(read).not.toHaveBeenCalled();
+      expect(stat).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+      stat.mockRestore();
+      open.mockRestore();
+    }
+
+    const missingFile = path.join(root, "missing-key");
+    expect(createRemoteMcpServers({ githubAuth: "token-file", githubTokenFile: missingFile }).github)
       .toEqual({
         type: "remote",
         url: "https://api.githubcopilot.com/mcp/",
         oauth: false,
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer {file:${missingFile}}` },
       });
-    writeFileSync(tokenFile, "first-line\nsecond-line\n");
-    expect(() => createRemoteMcpServers({ githubAuth: "token-file", githubTokenFile: tokenFile }))
-      .toThrow("GitHub token file must contain one line.");
-    expect(readFileSync(tokenFile, "utf8")).toContain("second-line");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
+test("uses default GitHub secret path under supplied global config directory", () => {
+  const globalConfigDirectory = path.resolve("fixture-global-config");
+  expect(createRemoteMcpServers({ githubAuth: "token-file" }, {}, { globalConfigDirectory }).github)
+    .toEqual({
+      type: "remote",
+      url: "https://api.githubcopilot.com/mcp/",
+      oauth: false,
+      headers: {
+        Authorization: `Bearer {file:${path.join(globalConfigDirectory, ".secrets", "github-key")}}`,
+      },
+    });
+});
+
+test("does not build GitHub file auth when global GitHub server already exists", () => {
+  const existing = { type: "remote", url: "https://example.test/mcp" };
+  expect(createRemoteMcpServers(
+    { githubAuth: "token-file", githubTokenFile: "/fixture/missing-key" },
+    { github: existing },
+  ).github).toEqual({ type: "remote", url: "https://api.githubcopilot.com/mcp/" });
+});
+
 test("rejects invalid MCP options", () => {
-  for (const options of [null, [], { githubAuth: "personal-access-token" }, { githubTokenFile: "/tmp/token" }, { other: true }]) {
+  for (const options of [
+    null,
+    [],
+    { githubAuth: "personal-access-token" },
+    { githubTokenFile: "/tmp/token" },
+    { githubAuth: "token-file", githubTokenFile: "relative/token" },
+    { githubAuth: "token-file", githubTokenFile: "/tmp/unsafe{file}" },
+    { githubAuth: "token-file", githubTokenFile: "/tmp/unsafe\nheader" },
+    { other: true },
+  ]) {
     expect(() => createRemoteMcpServers(options as never)).toThrow();
+  }
+
+  for (const runtimeOptions of [
+    null,
+    [],
+    { globalConfigDirectory: "relative/config" },
+    { globalConfigDirectory: "/tmp/unsafe{directory}" },
+    { globalConfigDirectory: "/tmp/unsafe\ndirectory" },
+    { unknown: true },
+  ]) {
+    expect(() => createRemoteMcpServers(undefined, {}, runtimeOptions as never)).toThrow();
   }
 });

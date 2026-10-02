@@ -59,7 +59,16 @@ function snapshotFiles(directory: string): Map<string, string> {
 }
 
 function run(executable: string, launcherPath: string, args: readonly string[], cwd: string) {
-  return spawnSync(executable, [launcherPath, ...args], { cwd, encoding: "utf8" });
+  const homeDirectory = path.resolve(path.dirname(launcherPath), "../../..", "isolated-home");
+  return spawnSync(executable, [launcherPath, ...args], {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: homeDirectory,
+      XDG_CONFIG_HOME: path.join(homeDirectory, ".config"),
+    },
+  });
 }
 
 function projectSettings(fixture: ReturnType<typeof createFixture>): void {
