@@ -24,6 +24,7 @@ const AGENT_ID = /^sherpa-[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 export interface SherpaOmoReconcileOptions {
   /** OpenCode project directory. */
   readonly projectDirectory: string;
+  readonly dryRun?: boolean;
 }
 
 export interface SherpaOmoReconcileResult {
@@ -32,6 +33,7 @@ export interface SherpaOmoReconcileResult {
   readonly removedAgents: readonly string[];
   readonly installedAgents: readonly string[];
   readonly removedPrompts: readonly string[];
+  readonly changedPaths: readonly string[];
 }
 
 interface PlannedWrite {
@@ -293,7 +295,7 @@ export function reconcileSherpaOmoAgents(
   options: SherpaOmoReconcileOptions,
 ): SherpaOmoReconcileResult {
   if (resolution.diagnostics.length > 0) {
-    return { skipped: true, reason: "resolution-incomplete", removedAgents: [], installedAgents: [], removedPrompts: [] };
+    return { skipped: true, reason: "resolution-incomplete", removedAgents: [], installedAgents: [], removedPrompts: [], changedPaths: [] };
   }
 
   const projectDirectory = path.resolve(options.projectDirectory);
@@ -308,12 +310,16 @@ export function reconcileSherpaOmoAgents(
   if (promptStat && !promptStat.isDirectory()) throw new Error(`Project OMO-Slim prompt path is not a directory: ${promptDirectory}`);
   inspectPath(configPath);
   const { plan, removedAgents, removedPrompts } = buildPlan(resolution.agents, resolution.sources, configPath, promptDirectory);
-  commitPlan(plan);
+  if (!options.dryRun) commitPlan(plan);
 
   return {
     skipped: false,
     removedAgents,
     installedAgents: validateAgents(resolution.agents).map(({ id }) => id),
     removedPrompts,
+    changedPaths: [
+      ...plan.writes.map(({ target }) => target),
+      ...plan.removals.map(({ target }) => target),
+    ],
   };
 }

@@ -1,107 +1,78 @@
-import { readFileSync } from "node:fs";
-import os from "node:os";
+import { statSync } from "node:fs";
 import path from "node:path";
-import type { Context } from "@opencode/plugin/promise/plugin";
-import type { Registration } from "@opencode/plugin/promise/registration";
+import { DEFAULT_SHERPA_MCP_CATALOG } from "./mcp-catalog.ts";
+import { defaultOpenCodeConfigDirectory } from "./opencode-config.ts";
 
-export interface McpOptions {
-  /** Defaults to OpenCode-managed OAuth. */
-  readonly githubAuth?: "oauth" | "token-file";
-  /** Absolute path override used only with githubAuth: "token-file". */
-  readonly githubTokenFile?: string;
+interface McpRuntimeOptions {
+  readonly globalConfigDirectory?: string;
 }
 
-const GITHUB_URL = "https://api.githubcopilot.com/mcp/";
-const JINA_URL = "https://mcp.jina.ai/v1";
-const CONTEXT7_URL = "https://mcp.context7.com/mcp";
-const GH_GREP_URL = "https://mcp.grep.app";
+function validateFileTemplatePath(filePath: string, name: string): void {
+  if (/[\0\r\n{}]/u.test(filePath)) {
+    throw new TypeError(`${name} contains characters that cannot be used in an OpenCode file reference.`);
+  }
+}
 
-function validateOptions(options: unknown): McpOptions {
+function validateRuntimeOptions(options: unknown): McpRuntimeOptions {
   if (options === undefined) return {};
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
-    throw new TypeError("MCP options must be an object.");
+    throw new TypeError("MCP runtime options must be an object.");
   }
 
   const values = options as Record<string, unknown>;
-  const unsupportedOption = Object.keys(values).find(
-    (key) => key !== "githubAuth" && key !== "githubTokenFile",
-  );
-  if (unsupportedOption) throw new TypeError(`Unsupported MCP option: ${unsupportedOption}.`);
+  const unsupportedOption = Object.keys(values).find((key) => key !== "globalConfigDirectory");
+  if (unsupportedOption) throw new TypeError(`Unsupported MCP runtime option: ${unsupportedOption}.`);
 
-  const githubAuth = values.githubAuth;
-  if (githubAuth !== undefined && githubAuth !== "oauth" && githubAuth !== "token-file") {
-    throw new TypeError("githubAuth must be 'oauth' or 'token-file'.");
+  const globalConfigDirectory = values.globalConfigDirectory;
+  if (globalConfigDirectory !== undefined) {
+    if (typeof globalConfigDirectory !== "string" || !path.isAbsolute(globalConfigDirectory)) {
+      throw new TypeError("globalConfigDirectory must be an absolute path.");
+    }
+    validateFileTemplatePath(globalConfigDirectory, "globalConfigDirectory");
+    return { globalConfigDirectory };
   }
 
-  const githubTokenFile = values.githubTokenFile;
-  if (githubTokenFile !== undefined) {
-    if (typeof githubTokenFile !== "string" || !path.isAbsolute(githubTokenFile)) {
-      throw new TypeError("githubTokenFile must be an absolute path.");
-    }
-    if (githubAuth !== "token-file") {
-      throw new TypeError("githubTokenFile requires githubAuth to be 'token-file'.");
-    }
-  }
-
-  return {
-    ...(githubAuth === undefined ? {} : { githubAuth }),
-    ...(githubTokenFile === undefined ? {} : { githubTokenFile }),
-  };
+  return {};
 }
 
-function defaultGithubTokenFile(): string {
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME;
-  const configHome = xdgConfigHome && path.isAbsolute(xdgConfigHome)
-    ? xdgConfigHome
-    : path.join(os.homedir(), ".config");
-  return path.join(configHome, "opencode", ".secrets", "github-key");
-}
-
-function readGithubToken(tokenFile: string): string {
-  let contents: string;
+function existingCredentialFile(filePath: string, serverId: string): string | undefined {
   try {
-    contents = readFileSync(tokenFile, "utf8");
-  } catch {
-    throw new Error("Unable to read GitHub token file.");
+    return statSync(filePath).isFile() ? filePath : undefined;
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+    throw new Error(`Unable to inspect credential file for MCP server "${serverId}".`);
   }
-
-  const token = contents.replace(/[\r\n]+$/u, "");
-  if (token.trim().length === 0) throw new Error("GitHub token file is empty.");
-  if (/[\r\n]/u.test(token)) throw new Error("GitHub token file must contain one line.");
-  return token;
 }
 
-/** Register the portable remote MCP servers without replacing existing entries. */
-export async function registerRemoteMcpServers(
-  ctx: Pick<Context, "mcp">,
-  options?: McpOptions,
-): Promise<Registration> {
-  const validatedOptions = validateOptions(options);
-  const useTokenFile = validatedOptions.githubAuth === "token-file";
+/** Return default remote MCP entries for merging into project-local OpenCode config. */
+export function createRemoteMcpServers(
+  existingServers: Readonly<Record<string, unknown>> = {},
+  runtimeOptions?: McpRuntimeOptions,
+): Record<string, unknown> {
+  const validatedRuntimeOptions = validateRuntimeOptions(runtimeOptions);
+  const configDirectory = validatedRuntimeOptions.globalConfigDirectory ?? defaultOpenCodeConfigDirectory();
 
-  return ctx.mcp.transform((editor) => {
-    if (editor.get("github") === undefined) {
-      const githubToken = useTokenFile
-        ? readGithubToken(validatedOptions.githubTokenFile ?? defaultGithubTokenFile())
-        : undefined;
-      editor.set("github", githubToken === undefined
-        ? { type: "remote", url: GITHUB_URL }
-        : {
-            type: "remote",
-            url: GITHUB_URL,
-            oauth: false,
-            headers: { Authorization: `Bearer ${githubToken}` },
-          });
+  return Object.fromEntries(DEFAULT_SHERPA_MCP_CATALOG.map(({ id, url }) => {
+    const credentialPath = Object.hasOwn(existingServers, id)
+      ? undefined
+      : path.join(configDirectory, ".secrets", `${id}-key`);
+    const existingFile = credentialPath === undefined
+      ? undefined
+      : existingCredentialFile(credentialPath, id);
+
+    if (existingFile !== undefined) {
+      validateFileTemplatePath(existingFile, `${id} credential file path`);
+      return [id, {
+        type: "remote",
+        url,
+        oauth: false,
+        headers: { Authorization: `Bearer {file:${existingFile}}` },
+      }];
     }
 
-    if (editor.get("jina") === undefined) {
-      editor.set("jina", { type: "remote", url: JINA_URL });
-    }
-    if (editor.get("context7") === undefined) {
-      editor.set("context7", { type: "remote", url: CONTEXT7_URL });
-    }
-    if (editor.get("gh_grep") === undefined) {
-      editor.set("gh_grep", { type: "remote", url: GH_GREP_URL });
-    }
-  });
+    return [id, { type: "remote", url }];
+  }));
 }

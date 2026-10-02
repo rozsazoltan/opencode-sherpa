@@ -1,60 +1,164 @@
 # opencode-sherpa
 
-`opencode-sherpa` is a TypeScript ESM plugin for OpenCode. It declares `@opencode/plugin` with the semver range `2`, currently resolved to `2.0.16` by `bun.lock`; this does not assert host-version compatibility.
+OpenCode Sherpa is a project-oriented CLI for materializing reusable OpenCode instructions, skills, commands, MCP entries, and OMO-Slim specialist agents. It has no OpenCode plugin runtime: run its CLI explicitly when you want to sync a project.
 
-## What it does today
+## Requirements
 
-- Injects Sherpa's own engineering and conversation-language guidance through OpenCode's session context hook, without writing or managing a global `AGENTS.md`. Set `options.language` to a language such as `hu`; without a valid value, the plugin does not force a conversation language.
-- Handles OpenCode V2's separate `external_directory`, `read`, and `edit` actions. A matching `ask` may be allowed for paths under the default allowed root, `path.join(os.tmpdir(), "opencode")`, or an added `allowDirectories` root. `denyDirectories` takes priority over allowed roots: a matching request is denied even if its previous effect was `allow` when this hook runs. An explicit configured deny is never overridden.
-- Registers remote MCP servers `github` (`https://api.githubcopilot.com/mcp/`), `jina` (`https://mcp.jina.ai/v1`), `context7` (`https://mcp.context7.com/mcp`), and `gh_grep` (`https://mcp.grep.app`) only when their names are not already configured, preserving existing entries.
-- Resolves agent prompts from pinned Git repositories into a shared cache, then reconciles discovered agents in the current project's OMO-Slim config and prompt directory. Sherpa preserves unrelated project entries and files; it never changes global OMO-Slim files or the main OpenCode config, and it does not install OMO-Slim.
+- Node.js 22.18 or newer, or Bun
+- pnpm
+- OpenCode; install OMO-Slim separately if you want specialist-agent sync
 
-## Bundled tuning content
+Sherpa is installed from GitHub and is not published to the npm registry. A small JavaScript launcher loads the packaged TypeScript source with Node.js 22.18+; no generated `dist/` directory or install-time build is required.
 
-Sherpa discovers its own Markdown content below `tuning/` at plugin startup. You do not list filenames in the plugin configuration or loader code. Add content to the folder matching its purpose:
-
-```text
-tuning/
-├── instructions/
-│   ├── 00-core.md
-│   └── workflow/review.md
-├── skills/
-│   └── code-review/
-│       ├── SKILL.md
-│       └── references/checklist.md
-└── commands/
-    ├── review.md
-    └── git/status.md
+```sh
+pnpm add github:rozsazoltan/opencode-sherpa#<tag-or-commit>
+pnpm exec sherpa sync
 ```
 
-- Every Markdown file under `tuning/instructions/` is read recursively and appended to Sherpa's built-in instructions for each model context request. Files are combined in deterministic, relative-path order; numeric prefixes such as `00-` and `10-` make the intended order clear. Keep this directory for short, generally applicable rules because all of it is sent with every request. These are not written to a global `AGENTS.md`.
-- Each `tuning/skills/<skill-id>/SKILL.md` is registered as an individual OpenCode skill. Use YAML frontmatter with a `description` (required), optional `name`, and optional `autoinvoke` boolean; the Markdown body is the skill content. Nested directories are supported and form slash-separated IDs. Supporting files can live beside `SKILL.md`. If an ID already exists, Sherpa keeps the existing skill and skips the packaged definition.
+Use a release tag when available, or a commit SHA for a fixed revision. Installing the package does not modify the project; `sync` performs the changes explicitly.
 
-  ```md
-  ---
-  name: Code Review
-  description: Review a change for correctness and missing tests.
-  autoinvoke: false
-  ---
+## Commands
 
-  Inspect the requested change and report actionable findings.
-  ```
+```text
+sherpa sync [--project <path>] [--dry-run]
+```
 
-- Each Markdown file under `tuning/commands/` becomes a separate slash command. Its relative path (without `.md`) is the command name, so `git/status.md` becomes `/git/status`. Optional YAML frontmatter supports only `description`; other fields are rejected. The body is a prompt template, not a shell script. Sherpa replaces every literal `$ARGUMENTS` with all entered arguments; it does not support positional arguments or shell interpolation. If the template has no placeholder, non-empty arguments are appended after a blank line.
+The project defaults to the current directory. `--project` accepts an absolute or current-directory-relative path. `--dry-run` prints planned changes without writing project files; it may resolve sources over the network, using a temporary cache.
 
-  ```md
-  ---
-  description: Review supplied files for correctness.
-  ---
+- `--help` or no arguments prints usage and exits successfully.
+- Invalid arguments exit with code 2.
+- Sync failures exit with code 1.
 
-  Review $ARGUMENTS and report actionable findings.
-  ```
+Run `sync` again after changing Sherpa's package version, project configuration, or bundled tuning files. Sherpa does not watch files or run automatically at OpenCode startup.
 
-## OMO-Slim specialist agents
+## Project configuration
 
-Sherpa resolves agent prompts from pinned GitHub repositories at startup. The default source is [VoltAgent's subagent repository](https://github.com/VoltAgent/awesome-claude-code-subagents), pinned to an immutable commit. Sherpa recursively scans core-development, language-specialist, quality/security, developer-experience, and business/product categories, plus only `api-documenter.md` from specialized domains. README files are skipped. Agent IDs use the source namespace and prompt filename, such as `sherpa-voltagent-javascript-pro`; parent-directory context is added only when filenames collide. No per-agent registry is required.
+Create `opencode-sherpa.jsonc` in the repository root. A `.json` file is also accepted, but Sherpa refuses to choose if both exist. Supported settings are `detection`, `agents`, `skills`, `commands`, `instructions`, `agentSources`, `skillSources`, `mcp`, and `language`.
 
-Use `agentSources` to add repositories and roots or replace defaults. Each source descriptor requires a repository, full commit SHA, namespace, and selected directories. Set `includeDefaults: false` to use only custom sources, or pass an empty array to remove project-local Sherpa agents at startup.
+```jsonc
+{
+  "language": "hu",
+  "agents": {
+    "auto": true,
+    "include": ["sherpa-voltagent-api-documenter"],
+    "exclude": []
+  },
+  "skills": {
+    "auto": true,
+    "include": ["sherpa-issue-writing", "sherpa-pr-writing"],
+    "exclude": []
+  },
+  "commands": {
+    "auto": true,
+    "include": ["sherpa-write-issue", "sherpa-write-pr"],
+    "exclude": []
+  }
+}
+```
+
+### Repository detection and content selection
+
+Run `sherpa sync` from the repository root, or pass that root with `--project`. Sherpa detects PHP, JavaScript/TypeScript, and Rust from `composer.json`, `package.json`, and `Cargo.toml`. One manifest match enables the corresponding stack across the repository; discovery continues so mixed-language monorepos receive all matching stack content.
+
+Discovery checks root manifests, workspace declarations, and shallow `apps/*`, `packages/*`, `libs/*`, and `crates/*` directories. It reads pnpm workspace patterns, package.json workspaces, and Cargo workspace members. It skips dependency/build/cache directories and linked paths, and limits discovery depth and results. It does not recursively crawl every repository directory. `turbo.json` task definitions are not workspace membership declarations.
+
+Patterns support literal segments, `*`, `?`, and whole-segment `**`; braces, character classes, extglobs, absolute paths, and traversal segments are rejected. Workspace exclusions override convention and explicit-path discovery for their ecosystem: a JavaScript exclusion does not hide PHP or Rust manifests in that directory. Discovery depth is bounded to 10 levels; patterns requiring deeper paths are rejected. Sync fails when discovery exceeds 5,000 matched or configured directories, 128 paths per declaration, or 20,000 shared filesystem entry/read units. Nonmatching entries and repeated scans consume that budget too.
+
+Sherpa accepts `pnpm-workspace.yaml` or `pnpm-workspace.yml` as discovery input and refuses an ambiguous pair. Use `pnpm-workspace.yaml` for pnpm itself; Sherpa's `.yml` support does not imply pnpm accepts that filename. Add relative paths or directory glob patterns for another layout:
+
+```jsonc
+{
+  "detection": {
+    "enabled": true,
+    "paths": ["services/*"]
+  }
+}
+```
+
+Set `detection.enabled` to `false` to disable discovery. Explicit content includes still work. Malformed manifests or invalid selection settings stop sync rather than silently selecting the wrong content.
+
+Automatic agents are curated roles matched against discovered source prompts: PHP Pro, JavaScript Pro, Rust Engineer, and detected TypeScript, Laravel, Vue, or React specialists. Other roles remain optional. Agent IDs retain their source namespace; custom repositories can supply the same roles without hardcoded agent IDs.
+
+The seven original Sherpa skills remain bundled and available only through explicit `skills.include`: `sherpa-php-development`, `sherpa-js-development`, `sherpa-rust-development`, `sherpa-laravel-development`, `sherpa-vue-development`, `sherpa-issue-writing`, and `sherpa-pr-writing`. They are not automatically layered over the curated upstream skills below. Issue/PR-writing skills remain opt-in.
+
+### External skills
+
+`skillSources` configures pinned upstream skill catalogs. It is separate from `agentSources`; OMO-Slim agent sourcing remains unchanged. Omitting `skillSources` enables Sherpa's curated catalog, pinned to immutable upstream commits:
+
+| Namespace | Repository | Automatic selection |
+| --- | --- | --- |
+| `superpowers` | [`obra/superpowers`](https://github.com/obra/superpowers) | None. Four optional workflow skills: test-driven-development, systematic-debugging, verification-before-completion, and brainstorming. |
+| `antfu` | [`antfu/skills`](https://github.com/antfu/skills) | `pnpm` when `packageManager` declares `pnpm@`; `vite`, `vitest`, `vue`, `nuxt`, `pinia`, `unocss`, and `vitepress` when matching manifest dependencies are detected. |
+| `nuno` | [`nunomaduro/laravel-starter-kit-inertia-vue`](https://github.com/nunomaduro/laravel-starter-kit-inertia-vue) | Laravel best practices for Laravel projects; Fortify guidance only with `laravel/fortify`; Wayfinder guidance only with `laravel/wayfinder`. |
+| `asyraf` | [`AsyrafHussin/agent-skills`](https://github.com/AsyrafHussin/agent-skills) | PHP best practices for detected PHP projects. |
+| `leonardomso` | [`leonardomso/rust-skills`](https://github.com/leonardomso/rust-skills) | Rust skills for detected Rust projects. |
+| `mattpocock` | [`mattpocock/skills`](https://github.com/mattpocock/skills) | None. Optional diagnosing-bugs, codebase-design, and writing-for-agents skills. |
+
+The `sherpa-antfu-antfu` and `sherpa-antfu-antfu-create-pr` skills are also optional; they contain opinionated policies. Preserve their upstream credits when adapting them. Superpowers prescribes test-first, specification approval, and companion workflows; enable those skills only when those practices fit. Nuno's Fortify and Wayfinder skills do not auto-select from PHP, Vue, React, or Inertia alone. Its Laravel best-practices entry is one canonical skill with its complete rule folder, not duplicate framework copies. No generic JavaScript or TypeScript rule selects a workflow skill. Sherpa uses selected raw skills, not `antfu/skills-pack`'s generator or its third-party catalog.
+
+`skills.auto` defaults to `true`, but only skills with curated matching rules are selected automatically. The original seven Sherpa skills and other uncataloged skills require explicit inclusion. `skills.include` and `skills.exclude` accept IDs from bundled skills and declared upstream entries. Exclusions win. Unknown IDs fail before upstream fetch. Setting `skills.auto` to `false` disables automatic skill selection but keeps explicit includes.
+
+Use `skillSources` as an array to replace the built-in catalog. An empty array disables all external sources; it does not enable automatic fallback to the original Sherpa skills. Explicit includes for those bundled skills still work. The object form appends custom sources by default; set `includeDefaults` to `false` to replace the built-ins:
+
+```jsonc
+{
+  "skillSources": {
+    "includeDefaults": true,
+    "sources": [
+      {
+        "namespace": "team",
+        "repository": "example/skills",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "licensePath": "LICENSE",
+        "skills": [
+          {
+            "id": "release-review",
+            "path": "skills/release-review/SKILL.md",
+            "supportPaths": ["references"]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Each source requires `namespace`, `repository`, a full immutable `commit` SHA, and one or more `skills`. Specify exactly one source license field: `licensePath` for an actual file in the pinned repository, or `license` for a declared identifier that must match each selected skill's frontmatter. Each skill entry accepts only `id`, exact repository-relative `path`, and optional `supportPaths`. Unknown fields, duplicate namespaces or IDs, mutable refs, globs, absolute paths, traversal segments, and backslashes are rejected. `path` must end in `SKILL.md`. Nested skills copy their containing folder by default; `supportPaths` narrows additional files or directories relative to that skill folder. A root-level `SKILL.md` requires explicit `supportPaths`, including `[]` when it has no supporting files.
+
+Imported IDs use `sherpa-<namespace>-<id>` and remain stable across upstream commit updates. Sherpa preserves the original `SKILL.md` bytes and frontmatter; OpenCode v2 uses frontmatter `name` as the display label. Sherpa fetches only pinned repositories needed by selected skills. It resolves sources through the same integrity-checked archive cache used for agent sources, under `~/.cache/opencode/.sherpa/agent-sources/` or `$XDG_CACHE_HOME/opencode/.sherpa/agent-sources/`. A dry run can fetch over the network, but uses a temporary cache and does not write project files. Source, skill, license, and metadata diagnostics stop sync before project writes.
+
+Skill archives may contain safe relative symlink aliases outside selected skills, support paths, and license files. Sherpa records those aliases in the cache but never extracts or follows them. Links affecting selected content, unsafe paths or targets, hardlinks, and special entries are rejected. Agent-source archives retain strict symlink rejection.
+
+Each imported skill includes deterministic `SHERPA-SOURCE.json` provenance with repository, commit, source path, archive hash, file hashes, and license evidence. Sherpa copies a real pinned license file in full as `SHERPA-LICENSE.txt` when `licensePath` is configured. The Superpowers, Antfu, Asyraf, Leonardomso, and Matt Pocock pins provide MIT license files. Otherwise, provenance records only the declared license identifier; Sherpa does not invent license text or copyright statements. At the built-in Nuno pin, the repository has no root license file; its skill metadata declares MIT and credits Laravel as author. Nuno Maduro distributes those skills; do not attribute their authorship to Nuno. Sherpa's AGPL license covers Sherpa code, not upstream skills; review each upstream license and preserve its notices.
+
+Upstream instructions are not guarantees about the current project or available tools. Antfu references include Vite 8.3.1, Vitest 5.0.1, and pnpm 11/12; verify guidance against local versions. The Nuno Laravel skills include assumptions about the Laravel `search-docs` tool, always using subagents, `Cache::flexible`, and concurrency features; check local Laravel versions and agent tools. Asyraf's PHP 8.0–8.5 guide is community guidance, not official PHP documentation. Leonardomso's guide targets Rust 1.96 and edition 2024; it does not install or upgrade Rust. Copied support scripts and metadata remain inert; syncing does not install tools or provide upstream runtime capabilities.
+
+Automatic commands are `sherpa-js-check`, `sherpa-php-check`, and `sherpa-rust-check`, selected for their detected stacks. They ask the agent to inspect project tooling and run relevant configured checks, not install tools or assume a fixed test command. Invoke a selected command with, for example, `/sherpa-js-check <task>`. The `sherpa-write-issue` and `sherpa-write-pr` commands are opt-in drafting helpers. Selecting a command does not implicitly enable its related skill.
+
+Bundled instruction selection follows the same stack rules: `10-js-development`, `20-php-development`, and `30-rust-development`. The common `00-sherpa-principles` instruction is selected by default for every project. Selected instruction bodies are combined into Sherpa's marked block in root `AGENTS.md`; they do not create separate project instruction files.
+
+All four content settings—`agents`, `skills`, `commands`, and `instructions`—accept `auto`, `include`, and `exclude`. Automatic selection defaults to on, while explicit extras default to empty. Set `auto` to `false` for a manual-only list. `include` adds available IDs, and `exclude` wins over both automatic selection and inclusion. Unknown IDs are errors, not ignored requests. Agent IDs must exist in configured sources; skill IDs must exist in bundled tuning or the active skill-source catalog; commands and instructions must exist in installed tuning content. Command and instruction IDs are relative paths without `.md`, such as `git/status` or `00-sherpa-principles`.
+
+For example, keep only the common bundled instruction:
+
+```jsonc
+{
+  "instructions": {
+    "auto": false,
+    "include": ["00-sherpa-principles"]
+  }
+}
+```
+
+Sherpa's base language and code-writing rules remain in the managed block even when all bundled instructions are disabled. Uncataloged bundled commands and instructions are optional and require an explicit include, just like uncataloged skills.
+
+`sherpa sync --dry-run` reports detected stacks, framework features, manifest evidence, selected IDs, reasons, and planned file changes. Nothing is enabled globally or loaded by every agent automatically: project skills remain on-demand OpenCode skills.
+
+### External OMO-Slim agents
+
+By default, Sherpa downloads the pinned [VoltAgent subagent repository](https://github.com/VoltAgent/awesome-claude-code-subagents) and scans selected core-development, language, QA/security, developer-experience, and business/product categories, plus `api-documenter`. Scanning makes those roles available; only stack-matched or explicitly included agents are synchronized. It skips README files and derives IDs from source namespace and prompt filename. Claude-specific `tools` and `model` metadata are not carried into OMO-Slim agents.
+
+Sources are immutable repository/commit/directory selections. Add repositories or replace the defaults with `agentSources`:
 
 ```jsonc
 {
@@ -72,104 +176,80 @@ Use `agentSources` to add repositories and roots or replace defaults. Each sourc
 }
 ```
 
-Sherpa caches each immutable repository under `~/.cache/opencode/.sherpa/agent-sources/` (or `$XDG_CACHE_HOME/opencode/.sherpa/agent-sources/`) and reuses verified content offline. It downloads GitHub source archives, not mutable branches. Prompt YAML frontmatter may provide `description` and `orchestratorPrompt`; Claude-specific `tools` and `model` fields are ignored. On first successful resolution, source license text is recorded in the project-local OMO-Slim prompt directory with commit and archive-hash provenance; an existing notice file is preserved. Review third-party source content before enabling it.
+Set `includeDefaults` to `false` to use only custom sources. Set `agentSources` to `[]` to disable all agent sources and remove Sherpa-managed project agents during a successful sync.
 
-OMO-Slim must be installed and configured. At each plugin startup, Sherpa reconciles the current project in `.opencode/oh-my-opencode-slim.jsonc` and `.opencode/oh-my-opencode-slim/`; if only `.json` exists, Sherpa uses that file. New agents inherit the active session model in `codex` and `session` presets. OMO-Slim uses descriptions and `orchestratorPrompt` for semantic routing; reload OpenCode/OMO-Slim after startup.
+Source archives are cached under `~/.cache/opencode/.sherpa/agent-sources/`, or `$XDG_CACHE_HOME/opencode/.sherpa/agent-sources/` when configured. Sherpa verifies cached content and can reuse it offline. Review source prompts and licenses before enabling them; source license and commit provenance are recorded with synchronized prompts.
 
-Sherpa-managed namespace is destructive by design: startup removes every project-local root `agents` key and every preset agent key that starts with `sherpa`, then regenerates agents resolved from configured sources. It also removes top-level `sherpa*.md` agent prompt files before writing current prompts. This includes user-modified entries and prompts. Keep user-managed agents and prompts outside this prefix. Sherpa preserves other config entries, JSONC comments, presets, models, and prompt-directory files. It never reads or writes global OMO-Slim config/prompts. Any source-resolution diagnostic, including a failed fetch, skips reconciliation and retains last working agents; an intentionally empty `agentSources` list has no diagnostics and removes all project-local Sherpa-managed agents and prompts. Symlinked config/prompt paths fail safely. Removing the plugin does not clean project files automatically.
+Agent sync requires OMO-Slim. It updates only project `.opencode/oh-my-opencode-slim.jsonc` (or the sole existing `.json`) and `.opencode/oh-my-opencode-slim/`. It never edits global OMO-Slim config, the main OpenCode config, or global `AGENTS.md`. OMO-Slim must be installed and loaded for the project to use these agents.
 
-Project detection and project-specific skill selection are not implemented yet. Skills remain the bundled definitions in `tuning/skills/`.
+**Managed namespace:** each successful sync removes all root and preset agent keys beginning with `sherpa` and all top-level `sherpa*.md` prompts in the project OMO-Slim prompt directory, then recreates the selected agents. This intentionally replaces user edits within that prefix. Keep personal agents/prompts outside it. Other entries, prompts, JSONC comments, and settings remain untouched. If any agent source fails validation or cannot be resolved, Sherpa stops before changing project files. Removing Sherpa does not clean generated project files; remove them manually if no longer needed.
 
-The tuning loader reads the packaged Sherpa tree, ignores symbolic links within it, and rejects a symbolic `tuning/` root. It reports invalid skill/command frontmatter during plugin setup instead of silently skipping those definitions. Content files sort by relative path, and Sherpa registers commands in that order. Duplicate names derived from bundled command files fail during loading. Collisions with existing OpenCode commands follow transform registration order; the command editor has no collision lookup, so a registration may replace an existing command. Content changes take effect after the plugin is reloaded; with a Git-installed package, update the package first. Sherpa does not manage global `AGENTS.md`.
+### MCP servers
 
-The GitHub MCP entry uses OpenCode-managed OAuth by default. OpenCode generally persists OAuth authorization per machine in host-managed storage, but this plugin does not guarantee that this endpoint interoperates with the host OAuth flow or that authentication survives a restart. Those behaviors have not been runtime-verified.
+Built-in remote MCP entries live in `src/mcp-catalog.ts`. Sync adds project entries only when their names are absent from both the project config and the global config:
 
-An alternative is to explicitly set `options.mcp.githubAuth` to `"token-file"`. Optionally set `options.mcp.githubTokenFile` to an absolute path; otherwise the token is read from `~/.config/opencode/.secrets/github-key`, or `$XDG_CONFIG_HOME/opencode/.secrets/github-key` when `XDG_CONFIG_HOME` is absolute. Keep the token out of logs and the repository, and restrict access to the file (for example, owner-only permissions such as mode `600` on POSIX systems). This option reads a local token; it does not generate or rotate credentials.
+- `github` — `https://api.githubcopilot.com/mcp/`
+- `jina` — `https://mcp.jina.ai/v1`
+- `context7` — `https://mcp.context7.com/mcp`
+- `gh_grep` — `https://mcp.grep.app`
 
-Directory lists accept absolute, literal paths only: no relative paths, globs, or environment-variable interpolation. The default root is computed on the machine running OpenCode, so it adapts to Linux, macOS, and Windows. Additional roots are specific to that machine. Exclusions apply to recognized absolute literal resources and simple terminal `/*` directory patterns; other resource forms retain the host decision. A denied child also denies a directory gate covering its parent, so a broad parent approval may stop working rather than grant partial access. This is permission automation, not a comprehensive AI file-access blocker: the plugin does not auto-allow shell or `bash` actions, but `external_directory` is also the shared gate for shell access, so shell may still access an allowed directory when otherwise permitted. Host shell access is not sandboxed here; symlinks and archive traversal are not fully protected, and this does not guarantee that permission prompts will be eliminated.
+For this lookup, Sherpa reads `opencode.json` or `opencode.jsonc` in `$XDG_CONFIG_HOME/opencode` when `XDG_CONFIG_HOME` is absolute, otherwise `~/.config/opencode`. It never writes global configuration, resolves its credential references, or copies its headers into the project. A globally configured name is preserved even when that server is disabled. Ambiguous files or malformed MCP configuration stop sync before project writes. This lookup is not a complete evaluation of every OpenCode configuration layer.
 
-## Install
+Existing project servers are never replaced or removed. If a name exists both locally and globally, the project server still shadows the entire global server object, including its authentication settings. Sherpa reports that conflict; remove the project entry manually if you want to use the global one. If all catalog entries already exist locally or globally, sync does not create an empty project MCP config.
 
-Add the following entry to your per-machine global OpenCode `opencode.jsonc` configuration. The POSIX paths below are examples; replace them with absolute paths on the machine running OpenCode:
+Sherpa checks for regular credential files under `<global-config-dir>/.secrets` for catalog servers it will add. The filename is the server ID plus `-key`:
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    {
-      "package": "opencode-sherpa@git+https://github.com/rozsazoltan/opencode-sherpa.git",
-      "options": {
-        "language": "hu",
-        "permissions": {
-          "allowDirectories": ["/srv/projects/demo/uploads"],
-          "denyDirectories": ["/srv/projects/demo/uploads/private"]
-        }
-      }
-    }
-  ]
-}
+```text
+github-key
+jina-key
+context7-key
+gh_grep-key
 ```
 
-This Git package selector is an initial configuration example and has not yet been runtime-verified; confirm support with your OpenCode version before relying on it. The first startup needs network access to resolve uncached Git sources; later startups can reuse verified cache entries.
+When a matching regular file exists, Sherpa writes `oauth: false` and `Authorization: Bearer {file:<absolute-path>}` for that missing server. When it does not exist, Sherpa writes no auth fields; GitHub keeps OpenCode's default OAuth behavior and the other entries remain URL-only. This convention needs no per-server authentication settings or filename overrides. Sherpa checks file metadata only. It never reads, validates, or copies secret contents, including during dry-run. OpenCode resolves the file reference when it loads the project configuration.
 
-Restart OpenCode after updating the Sherpa plugin package to load the new version. To remove Sherpa, remove its plugin entry and restart OpenCode. Sherpa leaves project-local OMO-Slim entries and prompts in place when the plugin is removed; remove them manually if no longer wanted.
+The check runs only for catalog entries Sherpa will add; existing global or project servers are left alone. Sherpa generates an absolute reference, not a relative reference such as `{file:./.secrets/github-key}`.
 
-To opt into local GitHub token-file authentication instead of the default host-managed OAuth, add this to the Sherpa entry's `options` object:
+**Migration:** older Sherpa versions embedded token values in generated project headers. Existing entries are preserved, so this update does not automatically remove those values. Replace the old header with a file reference, or remove the project server to use its global definition. If a token was committed or shared, revoke or rotate it.
 
-```jsonc
-"mcp": {
-  "githubAuth": "token-file",
-  "githubTokenFile": "/absolute/path/to/github-key"
-}
+## Materialized project files
+
+- Root `AGENTS.md`: base rules and selected instructions inside Sherpa's managed block; surrounding user content is preserved.
+- `.opencode/skills/`: selected packaged or pinned upstream skills, support files, source provenance, and available upstream license notices.
+- `.opencode/commands/`: selected packaged Markdown prompt templates.
+- `opencode.json(c)`: missing project MCP entries under `mcp.servers` only.
+- `.opencode/oh-my-opencode-slim*`: source-derived project agents, when OMO-Slim is used.
+- `.opencode/.sherpa-files.json`: ownership hashes for managed skill and command files, including imported support files and notices.
+
+Tuning content is discovered recursively from the installed package's `tuning/` directory. Discovery does not require a hardcoded file list; curated automatic selection rules are separate:
+
+```text
+tuning/
+├── instructions/**/*.md
+├── skills/<skill-id>/SKILL.md
+└── commands/**/*.md
 ```
 
-Omit `githubTokenFile` to use the default path above. Never put the token value itself in configuration, documentation, or source control.
+Instruction Markdown IDs come from relative paths without `.md`; selected bodies are combined in deterministic path order and written inside Sherpa's marked block in `AGENTS.md`. A bundled skill requires YAML frontmatter `description`; use its directory ID as the frontmatter `name` when authoring Sherpa content. Imported skills retain their original frontmatter and use the namespaced directory ID. Supporting files beside `SKILL.md` are copied with it unless the source descriptor narrows them with `supportPaths`. Uncataloged bundled skills are optional and require an explicit include. Command names come from relative paths (`git/status.md` becomes `/git/status`). Commands are prompt templates, not shell scripts; `$ARGUMENTS` is replaced with entered text. If the placeholder is absent, arguments are appended to the prompt.
+
+Sherpa does not enforce runtime permissions. The former permission hook is removed; OpenCode's configured permission rules remain responsible for access control.
+
+## Sync behavior and safety
+
+Sherpa validates detection, selection, and source resolution and plans project writes before applying them. Source diagnostics abort before project files change. Managed skill/command files are tracked by hashes; user conflicts and modifications are preserved. When selection or package contents change, obsolete files are removed only if their contents still match the recorded ownership hash. Modified files remain with a conflict message. Existing MCP server names and unrelated JSONC content are preserved; sync does not remove stale MCP entries. Project writes apply in stages—generated artifacts, MCP config, then OMO-Slim reconciliation—so a failure in a later stage does not roll back earlier stages. Back up project files before first sync and inspect `--dry-run` output.
 
 ## Development
 
-With Bun available, run the test suite and TypeScript type check with:
-
 ```sh
+bun install --frozen-lockfile
 bun test
 bun run typecheck
 ```
 
-## Repository layout
+The installed CLI starts from `bin/sherpa.js`. Its Node shebang requires Node.js 22.18 or newer when invoked through pnpm. The launcher strips types only from Sherpa's own source, avoiding Node's restriction on TypeScript entrypoints under `node_modules`. Bun can run `bin/sherpa.js` or `src/cli.ts` directly without that loader.
 
-```text
-.
-├── .gitignore
-├── bun.lock
-├── LICENSE
-├── package.json
-├── tsconfig.json
-├── src/
-│   ├── index.ts
-│   ├── instructions.ts
-│   ├── mcp.ts
-│   ├── omo-agents.ts
-│   ├── permissions.ts
-│   └── tuning.ts
-├── test/
-│   ├── instructions.test.ts
-│   ├── mcp.test.ts
-│   ├── permissions.test.ts
-│   ├── plugin.test.ts
-│   ├── omo-agents.test.ts
-│   └── tuning.test.ts
-└── tuning/
-    ├── instructions/
-    │   └── 00-sherpa-principles.md
-    ├── skills/
-    │   └── .gitkeep
-    └── commands/
-        └── .gitkeep
-```
-
-## Roadmap
-
-Provider integrations and stronger end-to-end verification remain future work. Live OpenCode Git loading, remote OAuth handshakes, and native Windows/macOS behavior have not been verified in an OpenCode session.
+Node may report its type-stripping API as experimental. Sherpa does not suppress that runtime warning.
 
 ## License
 
-This project is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
+OpenCode Sherpa is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).

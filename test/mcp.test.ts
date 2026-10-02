@@ -1,188 +1,114 @@
-import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { expect, spyOn, test } from "bun:test";
+import fs, { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Context } from "@opencode/plugin/promise/plugin";
-import type { MCPEditor } from "@opencode/plugin/promise/mcp";
-import type { Registration } from "@opencode/plugin/promise/registration";
-import { registerRemoteMcpServers, type McpOptions } from "../src/mcp.ts";
+import { createRemoteMcpServers } from "../src/mcp.ts";
+import { DEFAULT_SHERPA_MCP_CATALOG } from "../src/mcp-catalog.ts";
 
-const registration: Registration = { dispose: async () => {} };
-
-async function captureError(promise: Promise<unknown>): Promise<Error> {
-  try {
-    await promise;
-  } catch (error) {
-    if (error instanceof Error) return error;
-    throw error;
-  }
-  throw new Error("Expected operation to fail.");
+function fixture() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "sherpa-mcp-"));
+  return { root, dispose: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-function createContext(initial: Record<string, unknown> = {}) {
-  const servers = new Map(Object.entries(initial));
-  let transformCalls = 0;
-  const editor = {
-    list: () => [...servers.entries()],
-    get: (name: string) => servers.get(name),
-    set: (name: string, config: unknown) => { servers.set(name, config); },
-    update: () => {},
-    remove: (name: string) => { servers.delete(name); },
-  } as unknown as MCPEditor;
-
-  const context = {
-    mcp: {
-      transform: async (callback: (editor: MCPEditor) => void) => {
-        transformCalls++;
-        callback(editor);
-        return registration;
-      },
-    },
-  } as unknown as Pick<Context, "mcp">;
-
-  return { context, servers, get transformCalls() { return transformCalls; } };
+function createServers(globalConfigDirectory: string, existingServers: Record<string, unknown> = {}) {
+  return createRemoteMcpServers(existingServers, { globalConfigDirectory });
 }
 
-test("registers remote servers with host-managed GitHub OAuth by default", async () => {
-  const { context, servers } = createContext();
-
-  const result = await registerRemoteMcpServers(context);
-
-  expect(result).toBe(registration);
-  expect(servers.get("github")).toEqual({
-    type: "remote",
-    url: "https://api.githubcopilot.com/mcp/",
-  });
-  expect(servers.get("jina")).toEqual({
-    type: "remote",
-    url: "https://mcp.jina.ai/v1",
-  });
-  expect(servers.get("context7")).toEqual({ type: "remote", url: "https://mcp.context7.com/mcp" });
-  expect(servers.get("gh_grep")).toEqual({ type: "remote", url: "https://mcp.grep.app" });
-});
-
-test("does not replace pre-existing MCP server configurations", async () => {
-  const github = { type: "remote", url: "https://github.example/mcp" };
-  const jina = { type: "local", command: ["existing-jina"] };
-  const context7 = { type: "remote", url: "https://existing.example/context7" };
-  const gh_grep = { type: "local", command: ["existing-grep"] };
-  const { context, servers } = createContext({ github, jina, context7, gh_grep });
-
-  await registerRemoteMcpServers(context);
-
-  expect(servers.get("github")).toBe(github);
-  expect(servers.get("jina")).toBe(jina);
-  expect(servers.get("context7")).toBe(context7);
-  expect(servers.get("gh_grep")).toBe(gh_grep);
-});
-
-test("does not read a missing token file when GitHub already exists", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "sherpa-mcp-"));
-  const missingTokenFile = path.join(directory, "missing-github-key");
-  const github = { type: "remote", url: "https://github.example/mcp" };
-  const fixture = createContext({ github });
-
+test("builds default project MCP entries without credentials when key files are absent", () => {
+  const { root, dispose } = fixture();
   try {
-    await registerRemoteMcpServers(fixture.context, {
-      githubAuth: "token-file",
-      githubTokenFile: missingTokenFile,
+    expect(createServers(root)).toEqual({
+      github: { type: "remote", url: "https://api.githubcopilot.com/mcp/" },
+      jina: { type: "remote", url: "https://mcp.jina.ai/v1" },
+      context7: { type: "remote", url: "https://mcp.context7.com/mcp" },
+      gh_grep: { type: "remote", url: "https://mcp.grep.app" },
     });
-
-    expect(fixture.servers.get("github")).toBe(github);
-    expect(fixture.servers.get("jina")).toEqual({
-      type: "remote",
-      url: "https://mcp.jina.ai/v1",
-    });
-    expect(fixture.transformCalls).toBe(1);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    dispose();
   }
 });
 
-test("uses an explicit token file and strips trailing newlines", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "sherpa-mcp-"));
-  const tokenFile = path.join(directory, "github-key");
-  const token = "fake-test-token-not-a-real-credential";
+test("uses each existing global key file as a file reference without reading it", () => {
+  const { root, dispose } = fixture();
+  const secretsDirectory = path.join(root, ".secrets");
+  const sentinel = "fixture-sentinel-not-a-credential";
+  mkdirSync(secretsDirectory);
+  for (const { id } of DEFAULT_SHERPA_MCP_CATALOG) {
+    writeFileSync(path.join(secretsDirectory, `${id}-key`), Buffer.from(`${sentinel}\n\0\xff`, "binary"));
+  }
+
+  const read = spyOn(fs, "readFileSync");
+  const open = spyOn(fs, "openSync");
   try {
-    await writeFile(tokenFile, `${token}\r\n`, "utf8");
-    const { context, servers } = createContext();
+    const servers = createServers(root);
+    for (const { id, url } of DEFAULT_SHERPA_MCP_CATALOG) {
+      const keyPath = path.join(secretsDirectory, `${id}-key`);
+      expect(servers[id]).toEqual({
+        type: "remote",
+        url,
+        oauth: false,
+        headers: { Authorization: `Bearer {file:${keyPath}}` },
+      });
+    }
+    expect(JSON.stringify(servers)).not.toContain(sentinel);
+    expect(read).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  } finally {
+    read.mockRestore();
+    open.mockRestore();
+    dispose();
+  }
+});
 
-    await registerRemoteMcpServers(context, {
-      githubAuth: "token-file",
-      githubTokenFile: tokenFile,
-    });
-
-    expect(servers.get("github")).toEqual({
+test("keeps missing and non-file credentials out of MCP headers", () => {
+  const { root, dispose } = fixture();
+  try {
+    mkdirSync(path.join(root, ".secrets"));
+    mkdirSync(path.join(root, ".secrets", "github-key"));
+    expect(createServers(root).github).toEqual({
       type: "remote",
       url: "https://api.githubcopilot.com/mcp/",
-      oauth: false,
-      headers: { Authorization: `Bearer ${token}` },
     });
-    expect(await readFile(tokenFile, "utf8")).toBe(`${token}\r\n`);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    dispose();
   }
 });
 
-test("reports missing and empty token files without exposing file paths or contents", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "sherpa-mcp-"));
-  const secretMarker = "fake-token-path-must-not-leak";
-  const missingFile = path.join(directory, secretMarker);
-  const emptyFile = path.join(directory, "empty-key");
+test("does not inspect credentials for servers already configured", () => {
+  const { root, dispose } = fixture();
+  const secretsDirectory = path.join(root, ".secrets");
+  mkdirSync(secretsDirectory);
+  for (const { id } of DEFAULT_SHERPA_MCP_CATALOG) {
+    writeFileSync(path.join(secretsDirectory, `${id}-key`), "fixture secret\n");
+  }
+  const stat = spyOn(fs, "statSync");
   try {
-    await writeFile(emptyFile, " \n", "utf8");
-
-    const missing = await captureError(registerRemoteMcpServers(createContext().context, {
-      githubAuth: "token-file",
-      githubTokenFile: missingFile,
-    }));
-    expect(missing).toBeInstanceOf(Error);
-    expect(missing.message).toBe("Unable to read GitHub token file.");
-    expect(missing.message).not.toContain(secretMarker);
-
-    const empty = await captureError(registerRemoteMcpServers(createContext().context, {
-      githubAuth: "token-file",
-      githubTokenFile: emptyFile,
-    }));
-    expect(empty).toBeInstanceOf(Error);
-    expect(empty.message).toBe("GitHub token file is empty.");
-    expect(empty.message).not.toContain(secretMarker);
+    const existingServers = Object.fromEntries(DEFAULT_SHERPA_MCP_CATALOG.map(({ id }) => [id, false]));
+    const servers = createServers(root, existingServers);
+    for (const { id, url } of DEFAULT_SHERPA_MCP_CATALOG) {
+      expect(servers[id]).toEqual({ type: "remote", url });
+    }
+    expect(stat).not.toHaveBeenCalled();
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    stat.mockRestore();
+    dispose();
   }
 });
 
-test("rejects multiline token files without exposing the token", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "sherpa-mcp-"));
-  const tokenFile = path.join(directory, "github-key");
+test("rejects invalid MCP runtime options", () => {
+  const { root, dispose } = fixture();
   try {
-    await writeFile(tokenFile, "fake-secret-first-line\r\nsecond-line\n");
-    const error = await captureError(registerRemoteMcpServers(createContext().context, {
-      githubAuth: "token-file",
-      githubTokenFile: tokenFile,
-    }));
-    expect(error.message).toBe("GitHub token file must contain one line.");
-    expect(error.message).not.toContain("fake-secret-first-line");
+    for (const runtimeOptions of [
+      null,
+      [],
+      { globalConfigDirectory: "relative/config" },
+      { globalConfigDirectory: "/tmp/unsafe{directory}" },
+      { globalConfigDirectory: "/tmp/unsafe\ndirectory" },
+      { unknown: true },
+    ]) {
+      expect(() => createRemoteMcpServers({}, runtimeOptions as never)).toThrow();
+    }
   } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("rejects malformed MCP options before registering servers", async () => {
-  const cases: unknown[] = [
-    null,
-    [],
-    { githubAuth: "personal-access-token" },
-    { githubAuth: "token-file", githubTokenFile: "relative/key" },
-    { githubTokenFile: "/tmp/github-key" },
-    { unknown: true },
-  ];
-
-  for (const options of cases) {
-    const fixture = createContext();
-    await expect(
-      registerRemoteMcpServers(fixture.context, options as McpOptions),
-    ).rejects.toThrow();
-    expect(fixture.transformCalls).toBe(0);
+    dispose();
   }
 });

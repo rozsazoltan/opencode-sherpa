@@ -11,7 +11,7 @@
     "exactOptionalPropertyTypes": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["bun"]
+    "types": ["bun", "node"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]
 }

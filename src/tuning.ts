@@ -1,23 +1,42 @@
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Skill } from "@opencode/plugin";
-import type { Context } from "@opencode/plugin/promise/plugin";
-import type { CommandDefinition } from "@opencode/plugin/promise/command";
-import type { Registration } from "@opencode/plugin/promise/registration";
-import type { SkillEditor } from "@opencode/plugin/promise/skill";
 import { parse as parseYaml } from "yaml";
+import { isRecord, lexicalCompare } from "./agent-files.ts";
 
-type PackagedSkill = Parameters<SkillEditor["add"]>[0];
+export interface PackagedSkill {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly autoinvoke?: boolean;
+  readonly path: string;
+  readonly content: string;
+  readonly files?: ReadonlyMap<string, Buffer>;
+}
+
+export interface ParsedSkillDocument {
+  readonly name: string;
+  readonly description: string;
+  readonly autoinvoke?: boolean;
+  readonly license?: string;
+  readonly content: string;
+}
 
 export interface PackagedCommand {
   readonly name: string;
   readonly description?: string;
   readonly template: string;
+  readonly path: string;
+}
+
+export interface PackagedInstruction {
+  readonly id: string;
+  readonly path: string;
+  readonly content: string;
 }
 
 export interface SherpaTuning {
-  readonly instructions: readonly string[];
+  readonly instructions: readonly PackagedInstruction[];
   readonly skills: readonly PackagedSkill[];
   readonly commands: readonly PackagedCommand[];
 }
@@ -26,15 +45,7 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const CONTENT_ROOT = "tuning";
 const CONTENT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/u;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function lexicalCompare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function markdownFiles(directory: string): string[] {
+export function markdownFiles(directory: string): string[] {
   if (!existsSync(directory)) return [];
   const root = lstatSync(directory);
   if (!root.isDirectory() || root.isSymbolicLink()) {
@@ -66,8 +77,11 @@ function validatedRelativeName(root: string, target: string): string {
   return relative;
 }
 
-function readDocument(file: string, frontmatterRequired = true): { metadata: Record<string, unknown>; body: string } {
-  const source = readFileSync(file, "utf8").replace(/^\uFEFF/u, "");
+function parseDocument(sourceText: string, file: string, frontmatterRequired = true): {
+  metadata: Record<string, unknown>;
+  body: string;
+} {
+  const source = sourceText.replace(/^\uFEFF/u, "");
   const match = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/u.exec(source);
   if (!match) {
     if (/^---[ \t]*(?:\r?\n|$)/u.test(source)) {
@@ -92,6 +106,10 @@ function readDocument(file: string, frontmatterRequired = true): { metadata: Rec
   return { metadata: parsed, body };
 }
 
+function readDocument(file: string, frontmatterRequired = true): { metadata: Record<string, unknown>; body: string } {
+  return parseDocument(readFileSync(file, "utf8"), file, frontmatterRequired);
+}
+
 function optionalString(metadata: Record<string, unknown>, key: string, file: string): string | undefined {
   const value = metadata[key];
   if (value === undefined) return undefined;
@@ -106,38 +124,51 @@ function assertAllowedKeys(metadata: Record<string, unknown>, allowed: readonly 
   if (unsupported) throw new Error(`Unsupported frontmatter field '${unsupported}': ${file}`);
 }
 
+export function parseSkillDocument(source: string, id: string, file: string): ParsedSkillDocument {
+  const { metadata, body } = parseDocument(source, file);
+  assertAllowedKeys(metadata, ["name", "description", "autoinvoke", "metadata", "license", "compatibility"], file);
+  const description = optionalString(metadata, "description", file);
+  if (!description) throw new Error(`Skills require a description in frontmatter: ${file}`);
+
+  const displayName = optionalString(metadata, "name", file) ?? id;
+  const metadataValue = metadata.metadata;
+  const metadataRecord = metadataValue === undefined ? {} : metadataValue;
+  if (!isRecord(metadataRecord)) throw new Error(`Skill metadata must be an object: ${file}`);
+  const autoinvokeValue = metadata.autoinvoke ?? metadataRecord["opencode/autoinvoke"];
+  const autoinvoke = autoinvokeValue === "true"
+    ? true
+    : autoinvokeValue === "false"
+      ? false
+      : autoinvokeValue;
+  if (autoinvoke !== undefined && typeof autoinvoke !== "boolean") {
+    throw new Error(`Skill autoinvoke must be a boolean: ${file}`);
+  }
+  const license = typeof metadata.license === "string" ? metadata.license : undefined;
+
+  return {
+    name: displayName,
+    description,
+    ...(autoinvoke === undefined ? {} : { autoinvoke }),
+    ...(license === undefined ? {} : { license }),
+    content: body,
+  };
+}
+
 function readSkills(directory: string): PackagedSkill[] {
   return markdownFiles(directory)
     .filter((file) => path.basename(file) === "SKILL.md")
     .map((file) => {
-      const { metadata, body } = readDocument(file);
-      assertAllowedKeys(metadata, ["name", "description", "autoinvoke", "metadata", "license", "compatibility"], file);
-      const description = optionalString(metadata, "description", file);
-      if (!description) throw new Error(`Skills require a description in frontmatter: ${file}`);
-
       const skillDirectory = path.dirname(file);
       const id = validatedRelativeName(directory, skillDirectory);
-      const displayName = optionalString(metadata, "name", file) ?? id;
-      const metadataValue = metadata.metadata;
-      const metadataRecord = metadataValue === undefined ? {} : metadataValue;
-      if (!isRecord(metadataRecord)) throw new Error(`Skill metadata must be an object: ${file}`);
-      const autoinvokeValue = metadata.autoinvoke ?? metadataRecord["opencode/autoinvoke"];
-      const autoinvoke = autoinvokeValue === "true"
-        ? true
-        : autoinvokeValue === "false"
-          ? false
-          : autoinvokeValue;
-      if (autoinvoke !== undefined && typeof autoinvoke !== "boolean") {
-        throw new Error(`Skill autoinvoke must be a boolean: ${file}`);
-      }
+      const parsed = parseSkillDocument(readFileSync(file, "utf8"), id, file);
 
       return {
-        id: Skill.ID.make(id),
-        name: Skill.Name.make(displayName),
-        description,
-        ...(autoinvoke === undefined ? {} : { autoinvoke }),
-        path: file as PackagedSkill["path"],
-        content: body,
+        id,
+        name: parsed.name,
+        description: parsed.description,
+        ...(parsed.autoinvoke === undefined ? {} : { autoinvoke: parsed.autoinvoke }),
+        path: file,
+        content: parsed.content,
       };
     });
 }
@@ -158,16 +189,25 @@ function readCommands(directory: string): PackagedCommand[] {
       name,
       ...(description === undefined ? {} : { description }),
       template: body,
+      path: file,
     };
   });
 }
 
-function renderCommandTemplate(template: string, argumentsText: string): string {
-  if (template.includes("$ARGUMENTS")) {
-    return template.replaceAll("$ARGUMENTS", () => argumentsText);
-  }
-  if (argumentsText.trim().length === 0) return template;
-  return `${template}\n\n${argumentsText}`;
+function readInstructions(directory: string): PackagedInstruction[] {
+  const ids = new Set<string>();
+  return markdownFiles(directory).flatMap((file) => {
+    const content = readFileSync(file, "utf8");
+    if (!content.trim()) return [];
+
+    const instructionPath = path.join(path.dirname(file), path.basename(file).replace(/\.md$/iu, ""));
+    const id = validatedRelativeName(directory, instructionPath);
+    if (ids.has(id)) {
+      throw new Error(`Duplicate packaged instruction ID '${id}' derived from ${file}.`);
+    }
+    ids.add(id);
+    return [{ id, path: file, content }];
+  });
 }
 
 export function loadSherpaTuning(packageRoot = PACKAGE_ROOT): SherpaTuning {
@@ -178,61 +218,11 @@ export function loadSherpaTuning(packageRoot = PACKAGE_ROOT): SherpaTuning {
       throw new Error(`Tuning content path must be a real directory: ${tuningRoot}`);
     }
   }
-  const instructionFiles = markdownFiles(path.join(tuningRoot, "instructions"));
-  const instructions = instructionFiles
-    .map((file) => readFileSync(file, "utf8").trim())
-    .filter((content) => content.length > 0);
+  const instructions = readInstructions(path.join(tuningRoot, "instructions"));
 
   return {
     instructions,
     skills: readSkills(path.join(tuningRoot, "skills")),
     commands: readCommands(path.join(tuningRoot, "commands")),
   };
-}
-
-export async function registerSherpaSkills(
-  ctx: Pick<Context, "skill">,
-  skills: readonly PackagedSkill[],
-): Promise<Registration | undefined> {
-  if (skills.length === 0) return undefined;
-  return ctx.skill.transform((editor) => {
-    for (const skill of skills) {
-      if (editor.get(skill.id)) continue;
-      editor.add(skill);
-    }
-  });
-}
-
-export async function registerSherpaCommands(
-  ctx: Pick<Context, "command" | "session">,
-  commands: readonly PackagedCommand[],
-): Promise<Registration | undefined> {
-  if (commands.length === 0) return undefined;
-  return ctx.command.transform((editor) => {
-    for (const command of commands) {
-      const definition: CommandDefinition = {
-        name: command.name,
-        ...(command.description === undefined ? {} : { description: command.description }),
-        execute: async ({ sessionID, prompt, delivery }) => {
-          const text = renderCommandTemplate(command.template, prompt.text);
-          const files = prompt.files?.map(({ uri, name, description }) => ({
-            uri,
-            ...(name === undefined ? {} : { name }),
-            ...(description === undefined ? {} : { description }),
-          }));
-          const agents = prompt.agents?.map(({ name }) => ({ name }));
-          const skills = prompt.skills?.map(({ id }) => ({ id }));
-          await ctx.session.prompt({
-            sessionID,
-            text,
-            delivery,
-            ...(files === undefined ? {} : { files }),
-            ...(agents === undefined ? {} : { agents }),
-            ...(skills === undefined ? {} : { skills }),
-          });
-        },
-      };
-      editor.add(definition);
-    }
-  });
 }
