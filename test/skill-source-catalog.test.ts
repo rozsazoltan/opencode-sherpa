@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { PROJECT_SKILL_CATALOG } from "../src/project-catalog.ts";
+import { DEFAULT_SHERPA_SKILL_SOURCES } from "../src/skill-source-catalog.ts";
 import { configuredSherpaSkillSources, declaredSkillIds } from "../src/skill-sources.ts";
 import { selectProjectSkillIds } from "../src/project-selection.ts";
 
@@ -30,6 +32,12 @@ test("default skill source catalog keeps full pins, license evidence, and unique
       { id: "writing-for-agents", path: "skills/productivity/writing-for-agents/SKILL.md" },
     ],
   });
+});
+
+test("every automatic project skill exists in the pinned default skill catalog", () => {
+  const declared = new Set(declaredSkillIds(DEFAULT_SHERPA_SKILL_SOURCES));
+
+  for (const { id } of PROJECT_SKILL_CATALOG) expect(declared.has(id)).toBe(true);
 });
 
 test("Matt Pocock skills remain manual-only for every detected stack", () => {

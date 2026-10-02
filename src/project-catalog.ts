@@ -1,4 +1,6 @@
-export type ProjectStack = "php" | "js" | "rust";
+import type { ProjectStack } from "./project-detection-catalog.ts";
+
+export type { ProjectStack } from "./project-detection-catalog.ts";
 
 export interface ProjectContentRule {
   readonly id: string;

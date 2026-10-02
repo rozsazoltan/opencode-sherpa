@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { isRecord, lexicalCompare } from "./agent-files.ts";
 
 export interface PackagedSkill {
   readonly id: string;
@@ -43,14 +44,6 @@ export interface SherpaTuning {
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONTENT_ROOT = "tuning";
 const CONTENT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/u;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function lexicalCompare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 export function markdownFiles(directory: string): string[] {
   if (!existsSync(directory)) return [];

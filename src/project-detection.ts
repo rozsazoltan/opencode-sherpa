@@ -3,8 +3,16 @@ import path from "node:path";
 import { minimatch } from "minimatch";
 import { parse as parseTomlDocument } from "smol-toml";
 import { parse as parseYaml } from "yaml";
+import { isRecord, lexicalCompare } from "./agent-files.ts";
+import {
+  JS_DEPENDENCY_FEATURES,
+  PHP_DEPENDENCY_FEATURES,
+  PROJECT_DETECTION_STACK_ORDER,
+  RUST_DEPENDENCY_FEATURES,
+  type ProjectStack,
+} from "./project-detection-catalog.ts";
 
-export type ProjectStack = "php" | "js" | "rust";
+export type { ProjectStack } from "./project-detection-catalog.ts";
 
 export interface ProjectDetection {
   readonly stacks: ProjectStack[];
@@ -26,18 +34,9 @@ const MAX_MATCHES = 5_000;
 const MAX_FILESYSTEM_UNITS = 20_000;
 const MAX_CONFIG_DIRECTORIES = 5_000;
 const MAX_PATTERNS = 128;
-const STACK_ORDER: readonly ProjectStack[] = ["js", "php", "rust"];
 const MATCH_OPTIONS = { dot: true, nonegate: true, nocomment: true, noext: true, nobrace: true } as const;
 
 type UnknownRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function lexicalCompare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 function validatePattern(pattern: unknown, source: string): string {
   if (typeof pattern !== "string" || pattern.length === 0 || pattern.trim() !== pattern) {
@@ -410,49 +409,10 @@ function mappedFeatures(dependencies: Iterable<string>, mapping: Readonly<Record
   return [...features].sort(lexicalCompare);
 }
 
-const JS_FEATURES: Readonly<Record<string, string>> = {
-  "@angular/core": "angular",
-  "@pinia/nuxt": "pinia",
-  "@unocss/vite": "unocss",
-  gsap: "gsap",
-  next: "next",
-  nuxt: "nuxt",
-  pinia: "pinia",
-  react: "react",
-  "react-dom": "react",
-  tailwindcss: "tailwindcss",
-  "typescript": "typescript",
-  turbo: "turbo",
-  vite: "vite",
-  vitepress: "vitepress",
-  vitest: "vitest",
-  unocss: "unocss",
-  vue: "vue",
-};
-
-const PHP_FEATURES: Readonly<Record<string, string>> = {
-  "laravel/fortify": "fortify",
-  "laravel/framework": "laravel",
-  "laravel/wayfinder": "wayfinder",
-  "pestphp/pest": "pest",
-  "phpunit/phpunit": "phpunit",
-  "symfony/framework-bundle": "symfony",
-};
-
-const RUST_FEATURES: Readonly<Record<string, string>> = {
-  actix: "actix",
-  "actix-web": "actix-web",
-  anyhow: "anyhow",
-  axum: "axum",
-  serde: "serde",
-  tauri: "tauri",
-  tokio: "tokio",
-};
-
 function jsFeatures(manifest: UnknownRecord): string[] {
   const deps = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]
     .flatMap((key) => dependencyNames(manifest[key]));
-  const features = new Set(mappedFeatures(deps, JS_FEATURES));
+  const features = new Set(mappedFeatures(deps, JS_DEPENDENCY_FEATURES));
   const packageManager = manifest.packageManager;
   if (typeof packageManager === "string" && packageManager.startsWith("pnpm@") && packageManager.slice("pnpm@".length).trim()) {
     features.add("pnpm");
@@ -462,7 +422,7 @@ function jsFeatures(manifest: UnknownRecord): string[] {
 
 function phpFeatures(manifest: UnknownRecord): string[] {
   const deps = [...dependencyNames(manifest.require), ...dependencyNames(manifest["require-dev"])];
-  const features = mappedFeatures(deps, PHP_FEATURES);
+  const features = mappedFeatures(deps, PHP_DEPENDENCY_FEATURES);
   if (deps.some((name) => name.startsWith("illuminate/")) && !features.includes("laravel")) features.push("laravel");
   return features.sort(lexicalCompare);
 }
@@ -529,7 +489,7 @@ export function detectProject(projectDirectory: string, options?: ProjectDetecti
   if (rootPackage) recordEvidence(evidence, true, "package.json", "js", jsFeatures(rootPackage));
   if (rootComposer) recordEvidence(evidence, true, "composer.json", "php", phpFeatures(rootComposer));
   if (rootCargo && !isExcludedByWorkspace(".", rustExcludedDirectories)) {
-    recordEvidence(evidence, true, "Cargo.toml", "rust", mappedFeatures(rustDependencies(rootCargo), RUST_FEATURES));
+    recordEvidence(evidence, true, "Cargo.toml", "rust", mappedFeatures(rustDependencies(rootCargo), RUST_DEPENDENCY_FEATURES));
   }
 
   const seen = new Set<string>(["."]);
@@ -570,14 +530,15 @@ export function detectProject(projectDirectory: string, options?: ProjectDetecti
       const workspaces = workspaceDirectories(root, directory, declared.members, scanBudget, declared.exclude);
       addExcluded(rustExcludedDirectories, workspaces.excluded);
       if (selected && !isExcludedByWorkspace(directory, rustExcludedDirectories)) {
-        recordEvidence(evidence, true, cargoFile, "rust", mappedFeatures(rustDependencies(discoveredCargo), RUST_FEATURES));
+        recordEvidence(evidence, true, cargoFile, "rust", mappedFeatures(rustDependencies(discoveredCargo), RUST_DEPENDENCY_FEATURES));
       }
       for (const child of workspaces.directories) scheduleDirectory(pending, registered, child, true);
     }
   }
 
   evidence.sort((left, right) => lexicalCompare(left.path, right.path) || lexicalCompare(left.stack, right.stack));
-  const stacks = [...new Set(evidence.map(({ stack }) => stack))].sort((left, right) => STACK_ORDER.indexOf(left) - STACK_ORDER.indexOf(right));
+  const stacks = [...new Set(evidence.map(({ stack }) => stack))]
+    .sort((left, right) => PROJECT_DETECTION_STACK_ORDER.indexOf(left) - PROJECT_DETECTION_STACK_ORDER.indexOf(right));
   const features = [...new Set(evidence.flatMap(({ features: found }) => found))].sort(lexicalCompare);
   const directories = [...new Set(evidence.map(({ path: manifest }) => path.posix.dirname(manifest)))].sort(lexicalCompare);
   return { stacks, features, evidence, directories };
