@@ -10,12 +10,8 @@ function fixture() {
   return { root, dispose: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-function createServers(globalConfigDirectory: string, options?: unknown, existingServers: Record<string, unknown> = {}) {
-  return createRemoteMcpServers(
-    options as Parameters<typeof createRemoteMcpServers>[0],
-    existingServers,
-    { globalConfigDirectory },
-  );
+function createServers(globalConfigDirectory: string, existingServers: Record<string, unknown> = {}) {
+  return createRemoteMcpServers(existingServers, { globalConfigDirectory });
 }
 
 test("builds default project MCP entries without credentials when key files are absent", () => {
@@ -78,37 +74,6 @@ test("keeps missing and non-file credentials out of MCP headers", () => {
   }
 });
 
-test("keeps GitHub OAuth override and supports an existing custom token-file path", () => {
-  const { root, dispose } = fixture();
-  const secretsDirectory = path.join(root, ".secrets");
-  const defaultKey = path.join(secretsDirectory, "github-key");
-  const customKey = path.join(root, "custom-github-key");
-  mkdirSync(secretsDirectory);
-  writeFileSync(defaultKey, "default fixture secret\n");
-  writeFileSync(customKey, "custom fixture secret\n");
-  try {
-    expect(createServers(root, { githubAuth: "oauth" }).github).toEqual({
-      type: "remote",
-      url: "https://api.githubcopilot.com/mcp/",
-    });
-    expect(createServers(root, { githubAuth: "token-file", githubTokenFile: customKey }).github).toEqual({
-      type: "remote",
-      url: "https://api.githubcopilot.com/mcp/",
-      oauth: false,
-      headers: { Authorization: `Bearer {file:${customKey}}` },
-    });
-    expect(createServers(root, {
-      githubAuth: "token-file",
-      githubTokenFile: path.join(root, "missing-key"),
-    }).github).toEqual({
-      type: "remote",
-      url: "https://api.githubcopilot.com/mcp/",
-    });
-  } finally {
-    dispose();
-  }
-});
-
 test("does not inspect credentials for servers already configured", () => {
   const { root, dispose } = fixture();
   const secretsDirectory = path.join(root, ".secrets");
@@ -119,7 +84,7 @@ test("does not inspect credentials for servers already configured", () => {
   const stat = spyOn(fs, "statSync");
   try {
     const existingServers = Object.fromEntries(DEFAULT_SHERPA_MCP_CATALOG.map(({ id }) => [id, false]));
-    const servers = createServers(root, undefined, existingServers);
+    const servers = createServers(root, existingServers);
     for (const { id, url } of DEFAULT_SHERPA_MCP_CATALOG) {
       expect(servers[id]).toEqual({ type: "remote", url });
     }
@@ -130,22 +95,9 @@ test("does not inspect credentials for servers already configured", () => {
   }
 });
 
-test("rejects invalid MCP and runtime options", () => {
+test("rejects invalid MCP runtime options", () => {
   const { root, dispose } = fixture();
   try {
-    for (const options of [
-      null,
-      [],
-      { githubAuth: "personal-access-token" },
-      { githubTokenFile: "/tmp/token" },
-      { githubAuth: "token-file", githubTokenFile: "relative/token" },
-      { githubAuth: "token-file", githubTokenFile: "/tmp/unsafe{file}" },
-      { githubAuth: "token-file", githubTokenFile: "/tmp/unsafe\nheader" },
-      { other: true },
-    ]) {
-      expect(() => createServers(root, options)).toThrow();
-    }
-
     for (const runtimeOptions of [
       null,
       [],
@@ -154,7 +106,7 @@ test("rejects invalid MCP and runtime options", () => {
       { globalConfigDirectory: "/tmp/unsafe\ndirectory" },
       { unknown: true },
     ]) {
-      expect(() => createRemoteMcpServers(undefined, {}, runtimeOptions as never)).toThrow();
+      expect(() => createRemoteMcpServers({}, runtimeOptions as never)).toThrow();
     }
   } finally {
     dispose();

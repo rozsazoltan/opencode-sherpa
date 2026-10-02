@@ -33,8 +33,8 @@ test("remote MCP servers are constructed deterministically from catalog order", 
 
   const globalConfigDirectory = mkdtempSync(path.join(os.tmpdir(), "sherpa-mcp-catalog-"));
   try {
-    const first = createRemoteMcpServers(undefined, {}, { globalConfigDirectory });
-    const second = createRemoteMcpServers(undefined, {}, { globalConfigDirectory });
+    const first = createRemoteMcpServers({}, { globalConfigDirectory });
+    const second = createRemoteMcpServers({}, { globalConfigDirectory });
     expect(first).toEqual(expected);
     expect(second).toEqual(expected);
     expect(Object.keys(first)).toEqual(DEFAULT_SHERPA_MCP_CATALOG.map(({ id }) => id));

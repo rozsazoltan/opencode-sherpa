@@ -52,9 +52,6 @@ Create `opencode-sherpa.jsonc` in the repository root. A `.json` file is also ac
     "auto": true,
     "include": ["sherpa-write-issue", "sherpa-write-pr"],
     "exclude": []
-  },
-  "mcp": {
-    "githubAuth": "oauth"
   }
 }
 ```
@@ -209,9 +206,9 @@ context7-key
 gh_grep-key
 ```
 
-When a matching file exists, Sherpa writes `oauth: false` and `Authorization: Bearer {file:<absolute-path>}` for that missing server. When it does not exist, Sherpa writes no auth headers; GitHub keeps OpenCode's default OAuth behavior and the other entries remain URL-only. Sherpa checks file metadata only. It never reads, validates, or copies secret contents, including during dry-run. OpenCode resolves the file reference when it loads the project configuration.
+When a matching regular file exists, Sherpa writes `oauth: false` and `Authorization: Bearer {file:<absolute-path>}` for that missing server. When it does not exist, Sherpa writes no auth fields; GitHub keeps OpenCode's default OAuth behavior and the other entries remain URL-only. This convention needs no per-server authentication settings or filename overrides. Sherpa checks file metadata only. It never reads, validates, or copies secret contents, including during dry-run. OpenCode resolves the file reference when it loads the project configuration.
 
-The check runs only for catalog entries Sherpa will add; existing global or project servers are left alone. Sherpa generates an absolute reference, not a relative reference such as `{file:./.secrets/github-key}`. GitHub can still be forced to OAuth with `"mcp": { "githubAuth": "oauth" }`. The legacy `githubAuth: "token-file"` and absolute `githubTokenFile` override remain supported; a missing override file does not produce auth headers.
+The check runs only for catalog entries Sherpa will add; existing global or project servers are left alone. Sherpa generates an absolute reference, not a relative reference such as `{file:./.secrets/github-key}`.
 
 **Migration:** older Sherpa versions embedded token values in generated project headers. Existing entries are preserved, so this update does not automatically remove those values. Replace the old header with a file reference, or remove the project server to use its global definition. If a token was committed or shared, revoke or rotate it.
 

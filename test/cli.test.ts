@@ -1168,7 +1168,6 @@ test("global MCP servers suppress project defaults without exposing or changing 
   fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
     agentSources: [],
     skillSources: [],
-    mcp: { githubAuth: "token-file", githubTokenFile: path.join(fixtureData.root, "missing-token") },
   }));
   const globalConfig = fixtureData.write(fixtureData.root, "global-config/opencode.jsonc", `{
     "mcp": { "servers": {

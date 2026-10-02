@@ -61,7 +61,6 @@ interface ArtifactPlan {
 interface ProjectSettings {
   readonly agentSources?: unknown;
   readonly skillSources?: unknown;
-  readonly mcp?: unknown;
   readonly language?: unknown;
   readonly detection?: unknown;
   readonly agents?: unknown;
@@ -111,14 +110,13 @@ function loadProjectSettings(projectDirectory: string): ProjectSettings {
   if (source === undefined) return {};
   const parsed = parseJsoncObject(source, `OpenCode Sherpa config ${configPath}`);
   const unsupported = Object.keys(parsed).find((key) =>
-    !["agentSources", "skillSources", "mcp", "language", "detection", "agents", "commands", "instructions", "skills"].includes(key));
+    !["agentSources", "skillSources", "language", "detection", "agents", "commands", "instructions", "skills"].includes(key));
   if (unsupported) throw new Error(`Unsupported OpenCode Sherpa config option: ${unsupported}.`);
   return parsed;
 }
 
 function planMcpConfig(
   projectDirectory: string,
-  options: unknown,
   globalServerNames: readonly string[],
   globalConfigDirectory: string,
 ): McpConfigPlan {
@@ -135,7 +133,7 @@ function planMcpConfig(
   }
   const existingServers = isRecord(mcp.servers) ? mcp.servers : {};
   const globalServerSet = new Set(globalServerNames);
-  const servers = createRemoteMcpServers(options as Parameters<typeof createRemoteMcpServers>[0], {
+  const servers = createRemoteMcpServers({
     ...existingServers,
     ...Object.fromEntries(globalServerNames.map((name) => [name, true])),
   }, { globalConfigDirectory });
@@ -625,7 +623,7 @@ export async function syncProject(
     skills: selection.skills,
   };
   const artifactPlan = planArtifacts(projectDirectory, filteredTuning, settings.language);
-  const mcpPlan = planMcpConfig(projectDirectory, settings.mcp, globalServerNames, globalConfigDirectory);
+  const mcpPlan = planMcpConfig(projectDirectory, globalServerNames, globalConfigDirectory);
   const mcpWrite = mcpPlan.write;
   const omoResult = reconcileSherpaOmoAgents(filteredResolution, { projectDirectory, dryRun: true });
   const localMcpServerNames = new Set(mcpPlan.localServerNames);
