@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { DEFAULT_SHERPA_MCP_CATALOG } from "../src/mcp-catalog.ts";
 import { createRemoteMcpServers } from "../src/mcp.ts";
 
@@ -28,9 +31,14 @@ test("remote MCP servers are constructed deterministically from catalog order", 
     { type: "remote", url },
   ]));
 
-  const first = createRemoteMcpServers();
-  const second = createRemoteMcpServers();
-  expect(first).toEqual(expected);
-  expect(second).toEqual(expected);
-  expect(Object.keys(first)).toEqual(DEFAULT_SHERPA_MCP_CATALOG.map(({ id }) => id));
+  const globalConfigDirectory = mkdtempSync(path.join(os.tmpdir(), "sherpa-mcp-catalog-"));
+  try {
+    const first = createRemoteMcpServers(undefined, {}, { globalConfigDirectory });
+    const second = createRemoteMcpServers(undefined, {}, { globalConfigDirectory });
+    expect(first).toEqual(expected);
+    expect(second).toEqual(expected);
+    expect(Object.keys(first)).toEqual(DEFAULT_SHERPA_MCP_CATALOG.map(({ id }) => id));
+  } finally {
+    rmSync(globalConfigDirectory, { recursive: true, force: true });
+  }
 });

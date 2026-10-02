@@ -1,9 +1,10 @@
+import { statSync } from "node:fs";
 import path from "node:path";
 import { DEFAULT_SHERPA_MCP_CATALOG } from "./mcp-catalog.ts";
 import { defaultOpenCodeConfigDirectory } from "./opencode-config.ts";
 
 export interface McpOptions {
-  /** Defaults to OpenCode-managed OAuth. */
+  /** Force OpenCode-managed OAuth for GitHub instead of detecting github-key. */
   readonly githubAuth?: "oauth" | "token-file";
   /** Absolute path override used only with githubAuth: "token-file". */
   readonly githubTokenFile?: string;
@@ -75,6 +76,18 @@ function validateRuntimeOptions(options: unknown): McpRuntimeOptions {
   return {};
 }
 
+function existingCredentialFile(filePath: string, serverId: string): string | undefined {
+  try {
+    return statSync(filePath).isFile() ? filePath : undefined;
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+    throw new Error(`Unable to inspect credential file for MCP server "${serverId}".`);
+  }
+}
+
 /** Return default remote MCP entries for merging into project-local OpenCode config. */
 export function createRemoteMcpServers(
   options?: McpOptions,
@@ -83,25 +96,29 @@ export function createRemoteMcpServers(
 ): Record<string, unknown> {
   const validatedOptions = validateOptions(options);
   const validatedRuntimeOptions = validateRuntimeOptions(runtimeOptions);
-  const useTokenFile = validatedOptions.githubAuth === "token-file";
-  const githubTokenFile = useTokenFile && !Object.hasOwn(existingServers, "github")
-    ? validatedOptions.githubTokenFile ?? path.join(
-        validatedRuntimeOptions.globalConfigDirectory ?? defaultOpenCodeConfigDirectory(),
-        ".secrets",
-        "github-key",
-      )
-    : undefined;
-  if (githubTokenFile !== undefined) validateFileTemplatePath(githubTokenFile, "GitHub token file path");
+  const configDirectory = validatedRuntimeOptions.globalConfigDirectory ?? defaultOpenCodeConfigDirectory();
 
-  return Object.fromEntries(DEFAULT_SHERPA_MCP_CATALOG.map(({ id, url }) => [
-    id,
-    id === "github" && githubTokenFile !== undefined
-      ? {
-          type: "remote",
-          url,
-          oauth: false,
-          headers: { Authorization: `Bearer {file:${githubTokenFile}}` },
-        }
-      : { type: "remote", url },
-  ]));
+  return Object.fromEntries(DEFAULT_SHERPA_MCP_CATALOG.map(({ id, url }) => {
+    const forceOAuth = id === "github" && validatedOptions.githubAuth === "oauth";
+    const credentialPath = Object.hasOwn(existingServers, id) || forceOAuth
+      ? undefined
+      : id === "github" && validatedOptions.githubAuth === "token-file" && validatedOptions.githubTokenFile
+        ? validatedOptions.githubTokenFile
+        : path.join(configDirectory, ".secrets", `${id}-key`);
+    const existingFile = credentialPath === undefined
+      ? undefined
+      : existingCredentialFile(credentialPath, id);
+
+    if (existingFile !== undefined) {
+      validateFileTemplatePath(existingFile, `${id} credential file path`);
+      return [id, {
+        type: "remote",
+        url,
+        oauth: false,
+        headers: { Authorization: `Bearer {file:${existingFile}}` },
+      }];
+    }
+
+    return [id, { type: "remote", url }];
+  }));
 }

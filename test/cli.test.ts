@@ -1269,7 +1269,7 @@ test("does not create project MCP config when every built-in server exists globa
   }
 });
 
-test("uses injected global config directory for generated GitHub file references", async () => {
+test("adds file references for existing catalog keys in the injected global config directory", async () => {
   const fixtureData = fixture();
   const project = path.join(fixtureData.root, "project");
   const packageRoot = path.join(fixtureData.root, "package");
@@ -1279,8 +1279,10 @@ test("uses injected global config directory for generated GitHub file references
   fixtureData.write(project, "opencode-sherpa.json", JSON.stringify({
     agentSources: [],
     skillSources: [],
-    mcp: { githubAuth: "token-file" },
   }));
+  fixtureData.write(fixtureData.root, "global-config/.secrets/github-key", "github secret sentinel\n");
+  fixtureData.write(fixtureData.root, "global-config/.secrets/jina-key", "jina secret sentinel\n");
+  fixtureData.write(fixtureData.root, "global-config/.secrets/context7-key", "context7 secret sentinel\n");
   const globalConfig = fixtureData.write(fixtureData.root, "global-config/opencode.json", '{"mcp":{"servers":{"jina":false}}}\n');
 
   try {
@@ -1289,11 +1291,21 @@ test("uses injected global config directory for generated GitHub file references
       resolveSources: async () => ({ agents: [], sources: [], diagnostics: [] }),
     });
     const config = parseJsonc(readFileSync(path.join(project, "opencode.json"), "utf8")) as {
-      mcp: { servers: Record<string, { headers?: { Authorization?: string } }> };
+      mcp: { servers: Record<string, { type?: string; url?: string; oauth?: boolean; headers?: { Authorization?: string } }> };
     };
     expect(config.mcp.servers.github?.headers?.Authorization)
       .toBe(`Bearer {file:${path.join(globalConfigDirectory, ".secrets", "github-key")}}`);
+    expect(config.mcp.servers.github?.oauth).toBe(false);
+    expect(config.mcp.servers.context7).toEqual({
+      type: "remote",
+      url: "https://mcp.context7.com/mcp",
+      oauth: false,
+      headers: {
+        Authorization: `Bearer {file:${path.join(globalConfigDirectory, ".secrets", "context7-key")}}`,
+      },
+    });
     expect(config.mcp.servers.jina).toBeUndefined();
+    expect(config.mcp.servers.gh_grep).toEqual({ type: "remote", url: "https://mcp.grep.app" });
     expect(result.messages.join("\n")).not.toContain("sentinel");
     expect(readFileSync(globalConfig, "utf8")).toBe('{"mcp":{"servers":{"jina":false}}}\n');
   } finally {
