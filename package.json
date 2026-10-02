@@ -1,8 +1,13 @@
 {
-  "name": "opencode-sherpa",
+  "name": "@rozsazoltan/opencode-sherpa",
   "version": "0.1.0",
-  "private": true,
+  "description": "Project-specific CLI for syncing reusable OpenCode configuration",
   "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "repository": "github:rozsazoltan/opencode-sherpa",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "sherpa": "./bin/sherpa.js"
   },
@@ -10,6 +15,7 @@
     "node": ">=22.18.0"
   },
   "files": [
+    "README.md",
     "bin/",
     "src/",
     "tuning/",

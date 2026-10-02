@@ -1,0 +1,22 @@
+{
+  "name": "@rozsazoltan/opencode-sherpa-plugin",
+  "version": "0.1.0",
+  "description": "Opt-in global bootstrap plugin for OpenCode Sherpa",
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "repository": "github:rozsazoltan/opencode-sherpa",
+  "main": "./sherpa-bootstrap.ts",
+  "exports": "./sherpa-bootstrap.ts",
+  "files": [
+    "README.md",
+    "bootstrap.ts",
+    "sherpa-bootstrap.ts",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@opencode/plugin": "2.0.22"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

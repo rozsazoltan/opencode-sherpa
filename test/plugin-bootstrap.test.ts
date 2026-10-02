@@ -239,7 +239,7 @@ test("command asks for consent when undecided and does not interpolate invocatio
   expect(h.prompts.at(-1)?.text).not.toContain("rm -rf /");
 });
 
-test("sherpa-upgrade requires consent and pins latest master SHA before syncing", async () => {
+test("sherpa-upgrade handles scoped npm and legacy GitHub installs safely", async () => {
   const h = harness({ root: {} });
 
   await h.command("root", { text: "" }, SHERPA_UPGRADE_COMMAND);
@@ -249,11 +249,15 @@ test("sherpa-upgrade requires consent and pins latest master SHA before syncing"
   await h.command("root", { text: "" }, SHERPA_UPGRADE_COMMAND);
 
   const request = h.prompts.at(-1)?.text ?? "";
+  expect(request).toContain("@rozsazoltan/opencode-sherpa");
+  expect(request).toContain("pnpm update --latest @rozsazoltan/opencode-sherpa");
+  expect(request).toContain("legacy `opencode-sherpa`");
   expect(request).toContain("github:rozsazoltan/opencode-sherpa#<commit>");
   expect(request).toContain("git ls-remote https://github.com/rozsazoltan/opencode-sherpa.git refs/heads/master");
   expect(request).toContain("exactly one 40-character hexadecimal commit SHA");
   expect(request).toContain("pnpm add github:rozsazoltan/opencode-sherpa#<resolved-40-character-commit-SHA>");
-  expect(request).toContain("Only if step 1 succeeds, run `pnpm exec sherpa sync`.");
+  expect(request).toContain("pnpm remove opencode-sherpa");
+  expect(request).toContain("pnpm exec sherpa sync");
   expect(request).toContain("Do not change unrelated dependencies");
   expect(request).not.toContain("e26316eeb7cdf83e6d77090c7aadcd7c13961753");
   expect(h.prompts).toHaveLength(2);

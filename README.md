@@ -8,27 +8,33 @@ OpenCode Sherpa is a project-specific CLI for syncing reusable OpenCode instruct
 - pnpm
 - OpenCode; install OMO-Slim separately if you want specialist-agent sync
 
-Sherpa is installed from GitHub and is not published to the npm registry. A small JavaScript launcher loads the packaged TypeScript source with Node.js 22.18+; no generated `dist/` directory or install-time build is required.
+The project publishes two AGPL-3.0-or-later npm packages: `@rozsazoltan/opencode-sherpa` for the project CLI and `@rozsazoltan/opencode-sherpa-plugin` for the optional global bootstrap plugin. The CLI launcher loads packaged TypeScript directly with Node.js 22.18+; no generated `dist/` directory or install-time build is required.
 
-Install the CLI in the target project from this fixed revision:
-
-```sh
-pnpm add github:rozsazoltan/opencode-sherpa#e26316eeb7cdf83e6d77090c7aadcd7c13961753
-```
-
-Package installation edits the project's manifest and lockfile and may run dependency lifecycle scripts. After installation succeeds, run sync explicitly:
+Install the CLI in the target project after its first npm release:
 
 ```sh
+pnpm add @rozsazoltan/opencode-sherpa
 pnpm exec sherpa sync
 ```
 
-Sync materializes selected Sherpa content in that project. It does not install or configure a global plugin.
+Until the initial npm package is published, the pinned GitHub revision remains available:
+
+```sh
+pnpm add github:rozsazoltan/opencode-sherpa#e26316eeb7cdf83e6d77090c7aadcd7c13961753
+pnpm exec sherpa sync
+```
+
+Package installation edits the project's manifest and lockfile and may run dependency lifecycle scripts. Sync materializes selected Sherpa content in that project. It does not install or configure a global plugin.
 
 ## Optional global bootstrap plugin
 
-The repository also contains `plugin/sherpa-bootstrap.ts`, an optional global bootstrap helper. It reminds you about the project-local CLI and requests setup only after you opt in. It never installs or syncs automatically, and it does not replace the CLI. The plugin never invokes a shell itself; after approval, it asks the model to use ordinary OpenCode tools, subject to the normal permission rules.
+The repository also publishes `@rozsazoltan/opencode-sherpa-plugin`, an optional global bootstrap helper. Install it with OpenCode V2:
 
-To load the plugin, add its absolute checkout path to the `plugins` array in the global `opencode.json` or `opencode.jsonc` used by your OpenCode setup. The documented V2 configuration accepts absolute paths or `file:` URLs:
+```sh
+opencode plugin add @rozsazoltan/opencode-sherpa-plugin@latest
+```
+
+For local development, load `plugin/sherpa-bootstrap.ts` from an absolute checkout path in the global `plugins` array. The documented V2 configuration accepts absolute paths or `file:` URLs:
 
 ```jsonc
 {
@@ -38,7 +44,7 @@ To load the plugin, add its absolute checkout path to the `plugins` array in the
 }
 ```
 
-Replace the example with the path to your checkout and preserve existing plugin entries. OpenCode's documentation does not specify a global config filesystem location or a GitHub-URL plugin installation method; this guide does not assume either. The plugin source is not included in the package's current `files` allowlist, so load it from a repository checkout.
+Replace the example with the path to your checkout and preserve existing plugin entries. The plugin package is published separately from the CLI package and includes its AGPL license.
 
 In an eligible root session, the plugin offers an opt-in reminder in English. Reply exactly `yes` to approve bootstrap for that project, or `no` to decline. The decision is per project. Approval alone does not install or update anything; invoke `/sherpa-install` or `/sherpa-upgrade` explicitly. Both commands ask the model to use ordinary permissioned OpenCode tools; the plugin does not execute shell commands.
 
@@ -47,15 +53,20 @@ In an eligible root session, the plugin offers an opt-in reminder in English. Re
 1. `pnpm add github:rozsazoltan/opencode-sherpa#e26316eeb7cdf83e6d77090c7aadcd7c13961753`
 2. Only after step 1 succeeds, `pnpm exec sherpa sync`
 
-`/sherpa-upgrade` checks that `opencode-sherpa` is already in the project's `dependencies`, resolves the current `master` commit with `git ls-remote`, validates its 40-character SHA, and updates the dependency to that SHA:
+`/sherpa-upgrade` supports the published scoped CLI package and existing GitHub installs. For an npm dependency, it updates `@rozsazoltan/opencode-sherpa` to the latest version. For a GitHub dependency, it resolves the current `master` commit with `git ls-remote`, validates its 40-character SHA, and updates the dependency to that SHA. It also migrates the legacy unscoped GitHub dependency after the scoped add succeeds:
 
-1. `git ls-remote https://github.com/rozsazoltan/opencode-sherpa.git refs/heads/master`
-2. `pnpm add github:rozsazoltan/opencode-sherpa#<resolved-commit-SHA>`
-3. Only after step 2 succeeds, `pnpm exec sherpa sync`
+1. npm dependency: `pnpm update --latest @rozsazoltan/opencode-sherpa`
+2. GitHub dependency: `git ls-remote https://github.com/rozsazoltan/opencode-sherpa.git refs/heads/master`, then `pnpm add github:rozsazoltan/opencode-sherpa#<resolved-commit-SHA>`
+3. Legacy `opencode-sherpa` dependency: after step 2 succeeds, `pnpm remove opencode-sherpa`
+4. Only after required dependency operations succeed, `pnpm exec sherpa sync`
 
 Both commands may change the project manifest and lockfile and may run dependency lifecycle scripts; review and approve those effects. `/sherpa-install` and `/sherpa-upgrade` are plugin commands, not CLI subcommands. The CLI supports `sherpa sync`; there is no `sherpa install` or `sherpa upgrade` command.
 
-The plugin targets the documented OpenCode Plugin API V2. This repository's `@opencode-ai/plugin@1.18.34` source is V1, so runtime compatibility has not been verified. Tests exercise a mocked V2 shape and do not establish runtime compatibility.
+The plugin targets the documented OpenCode Plugin API V2 and depends on `@opencode/plugin@2.0.22`. This repository's historical `@opencode-ai/plugin@1.18.34` source is V1; compatibility with every OpenCode V2 runtime has not been verified.
+
+## Release workflow
+
+After the npm packages have their initial public versions and trusted publishers are configured, run the **Prepare release** workflow from the repository's Actions tab. It computes the next UTC `YYYY.MM.N` version from release tags, existing release branches, and both package manifests; creates `chore/release-v<version>` with one automated version-bump commit; and opens `chore: prepare v<version> release`. Related release changes may be added to that PR. Merging a valid release PR publishes both npm packages, creates the matching `v<version>` GitHub release/tag, and deletes the release branch.
 
 ## Commands
 

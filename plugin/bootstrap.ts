@@ -25,12 +25,11 @@ const INSTALL_REQUEST = [
 const UPGRADE_REQUEST = [
   "The user explicitly invoked /sherpa-upgrade and already approved Sherpa for this project. Use ordinary permissioned shell tools only; do not bypass or suppress shell permission checks.",
   "Run commands in this session's verified project directory. Do not run globally or at workspace root. Stop if pnpm is missing or a workspace conflict makes the project target ambiguous. Do not use -g or -w, and do not interpolate user-supplied command arguments.",
-  "First verify package.json has `opencode-sherpa` in `dependencies` and its value points to `github:rozsazoltan/opencode-sherpa#<commit>`; otherwise stop and explain that Sherpa is not installed from the expected source. Do not change unrelated dependencies.",
-  "Resolve the current master commit with `git ls-remote https://github.com/rozsazoltan/opencode-sherpa.git refs/heads/master`. Continue only if output contains exactly one 40-character hexadecimal commit SHA. Do not use the branch name as the package spec.",
-  "Then run exactly this sequence:",
-  "1. `pnpm add github:rozsazoltan/opencode-sherpa#<resolved-40-character-commit-SHA>`.",
-  "2. Only if step 1 succeeds, run `pnpm exec sherpa sync`.",
-  "The add command updates the Sherpa dependency and lockfile, and may run dependency lifecycle scripts. Stop if step 1 fails. Do not substitute commands or run any additional install command.",
+  "Inspect package.json dependencies. Accept exactly one Sherpa entry: `@rozsazoltan/opencode-sherpa` or the legacy `opencode-sherpa`. If both exist, neither exists, or the source is unexpected, stop and explain without changing dependencies.",
+  "If `@rozsazoltan/opencode-sherpa` is an npm registry dependency, run `pnpm update --latest @rozsazoltan/opencode-sherpa`. Only if that succeeds, run `pnpm exec sherpa sync`; stop if the update fails.",
+  "If the scoped dependency or legacy dependency is a GitHub source, verify it points to `github:rozsazoltan/opencode-sherpa#<commit>`. Resolve the current master commit with `git ls-remote https://github.com/rozsazoltan/opencode-sherpa.git refs/heads/master`. Continue only if output contains exactly one 40-character hexadecimal commit SHA. Do not use the branch name as the package spec.",
+  "For a GitHub source, run `pnpm add github:rozsazoltan/opencode-sherpa#<resolved-40-character-commit-SHA>`. If the only existing entry was the legacy `opencode-sherpa` key, remove it with `pnpm remove opencode-sherpa` only after the scoped add succeeds. Run `pnpm exec sherpa sync` only after all required dependency commands succeed.",
+  "Dependency commands update the manifest and lockfile and may run lifecycle scripts. Stop on any failure. Do not change unrelated dependencies, substitute commands, or run any additional install command.",
 ].join("\n");
 
 type StorageResult = unknown | Promise<unknown>;
